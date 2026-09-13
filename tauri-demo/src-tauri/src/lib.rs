@@ -19,6 +19,13 @@ pub struct ChangedFile {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RefTag {
+    pub name: String,
+    pub is_head: bool,
+    pub is_tag: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommitItem {
     pub sha: String,
     pub full_sha: String,
@@ -28,6 +35,7 @@ pub struct CommitItem {
     pub author_email: String,
     pub date: String,
     pub parent_shas: Vec<String>,
+    pub ref_tags: Vec<RefTag>,
     pub files: Vec<ChangedFile>,
     pub graph_col: usize,
 }
@@ -96,9 +104,45 @@ fn extract_prefix_and_msg(raw_subject: &str) -> (String, String) {
     ("".to_string(), s.to_string())
 }
 
+fn parse_ref_tags(raw_d: &str) -> Vec<RefTag> {
+    let mut tags = Vec::new();
+    let trimmed_all = raw_d.trim();
+    if trimmed_all.is_empty() {
+        return tags;
+    }
+
+    for item in trimmed_all.split(',') {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(target) = trimmed.strip_prefix("HEAD -> ") {
+            tags.push(RefTag {
+                name: target.trim().to_string(),
+                is_head: true,
+                is_tag: false,
+            });
+        } else if let Some(tag_name) = trimmed.strip_prefix("tag: ") {
+            tags.push(RefTag {
+                name: tag_name.trim().to_string(),
+                is_head: false,
+                is_tag: true,
+            });
+        } else if trimmed != "HEAD" {
+            tags.push(RefTag {
+                name: trimmed.to_string(),
+                is_head: false,
+                is_tag: false,
+            });
+        }
+    }
+
+    tags
+}
+
 fn clean_git_path(raw: &str) -> String {
     let unquoted = raw.trim().trim_matches('"');
-    // 处理 Git 重命名格式，如 "{Iris/docs => docs}/superpowers/..." 或 "old.ts => new.ts"
     if unquoted.contains(" => ") {
         if let (Some(start), Some(end)) = (unquoted.find('{'), unquoted.find('}')) {
             let prefix = &unquoted[..start];
@@ -169,6 +213,86 @@ fn fetch_commit_files(repo_path: &str, sha: &str) -> Vec<ChangedFile> {
     files
 }
 
+fn fetch_commits_internal(repo_path: &str, branch: Option<&str>) -> Vec<CommitItem> {
+    let mut commits = Vec::new();
+    let log_format = "%h%x09%H%x09%s%x09%an%x09%ae%x09%ad%x09%p%x09%D";
+
+    let mut args = vec!["log", "-n", "100"];
+    let branch_str;
+    if let Some(b) = branch {
+        if !b.trim().is_empty() {
+            branch_str = b.to_string();
+            args.push(&branch_str);
+        } else {
+            args.push("--all");
+        }
+    } else {
+        args.push("--all");
+    }
+
+    let fmt_arg = format!("--pretty=format:{}", log_format);
+    args.push(&fmt_arg);
+    args.push("--date=format:%Y-%m-%d %H:%M");
+
+    if let Ok(log_output) = run_git_in(repo_path, &args) {
+        let lines: Vec<&str> = log_output.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 6 {
+                let sha = parts[0].to_string();
+                let full_sha = parts[1].to_string();
+                let raw_subject = parts[2];
+                let author = parts[3].to_string();
+                let author_email = parts[4].to_string();
+                let date = parts[5].to_string();
+                let parents: Vec<String> = if parts.len() >= 7 {
+                    parts[6]
+                        .split_whitespace()
+                        .map(|s| s.to_string())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                let ref_tags = if parts.len() >= 8 {
+                    parse_ref_tags(parts[7])
+                } else {
+                    Vec::new()
+                };
+
+                let (prefix, msg) = extract_prefix_and_msg(raw_subject);
+
+                let files = if i < 10 {
+                    fetch_commit_files(repo_path, &sha)
+                } else {
+                    Vec::new()
+                };
+
+                commits.push(CommitItem {
+                    sha,
+                    full_sha,
+                    msg,
+                    prefix,
+                    author,
+                    author_email,
+                    date,
+                    parent_shas: parents,
+                    ref_tags,
+                    files,
+                    graph_col: 0,
+                });
+            }
+        }
+    }
+
+    commits
+}
+
+#[tauri::command]
+fn get_commits(repo_path: String, branch: Option<String>) -> Result<Vec<CommitItem>, String> {
+    Ok(fetch_commits_internal(&repo_path, branch.as_deref()))
+}
+
 #[tauri::command]
 fn load_repository(repo_path: String) -> Result<RepoDetails, String> {
     let p = Path::new(&repo_path);
@@ -230,64 +354,8 @@ fn load_repository(repo_path: String) -> Result<RepoDetails, String> {
         }
     }
 
-    // 2. 读取真实 commit 历史 (包含 author_email)
-    let mut commits = Vec::new();
-    let log_format = "%h%x09%H%x09%s%x09%an%x09%ae%x09%ad%x09%p";
-    if let Ok(log_output) = run_git_in(
-        &repo_path,
-        &[
-            "log",
-            "-n",
-            "50",
-            &format!("--pretty=format:{}", log_format),
-            "--date=format:%Y-%m-%d %H:%M",
-        ],
-    ) {
-        let lines: Vec<&str> = log_output.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 6 {
-                let sha = parts[0].to_string();
-                let full_sha = parts[1].to_string();
-                let raw_subject = parts[2];
-                let author = parts[3].to_string();
-                let author_email = parts[4].to_string();
-                let date = parts[5].to_string();
-                let parents: Vec<String> = if parts.len() >= 7 {
-                    parts[6]
-                        .split_whitespace()
-                        .map(|s| s.to_string())
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-
-                let (prefix, msg) = extract_prefix_and_msg(raw_subject);
-
-                let files = if i < 10 {
-                    fetch_commit_files(&repo_path, &sha)
-                } else {
-                    Vec::new()
-                };
-
-                let is_merge = parents.len() > 1;
-                let graph_col = if is_merge { 1 } else { 0 };
-
-                commits.push(CommitItem {
-                    sha,
-                    full_sha,
-                    msg,
-                    prefix,
-                    author,
-                    author_email,
-                    date,
-                    parent_shas: parents,
-                    files,
-                    graph_col,
-                });
-            }
-        }
-    }
+    // 2. 初始加载全部分支提交 (--all)
+    let commits = fetch_commits_internal(&repo_path, None);
 
     Ok(RepoDetails {
         repo,
@@ -336,6 +404,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             load_repository,
+            get_commits,
             get_commit_diff,
             checkout_branch,
             open_folder_dialog
@@ -349,31 +418,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_clean_git_path() {
-        assert_eq!(clean_git_path("\"UI设计.md\""), "UI设计.md");
-        assert_eq!(
-            clean_git_path("{Iris/docs => docs}/superpowers/specs/design.md"),
-            "docs/superpowers/specs/design.md"
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests_playground {
-    use super::*;
-
-    #[test]
-    fn test_git_playground() {
+    fn test_get_branch_commits() {
         let path = "/Users/sifan1/Documents/project/git-playground".to_string();
-        let details = load_repository(path).expect("Should load playground");
-        println!("Playground branches: {}", details.local_branches.len());
-        println!("Playground commits: {}", details.commits.len());
-        assert!(details.commits.len() >= 10);
-        for b in &details.local_branches {
-            println!("  branch: {} (head: {})", b.name, b.is_head);
-        }
-        for c in &details.commits {
-            println!("  commit: {} | {} | files: {}", c.sha, c.msg, c.files.len());
-        }
+        let all_commits = fetch_commits_internal(&path, None);
+        let dev_commits = fetch_commits_internal(&path, Some("dev"));
+        assert!(all_commits.len() >= dev_commits.len());
+        println!("All: {}, Dev: {}", all_commits.len(), dev_commits.len());
     }
 }

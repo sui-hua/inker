@@ -7,7 +7,6 @@ import {
   Sun,
   Moon,
   ChevronDown,
-  ChevronUp,
   ChevronRight,
   GitBranch,
   Globe,
@@ -15,6 +14,8 @@ import {
   Check,
   RefreshCw,
   X,
+  ChevronUp,
+  Tag,
 } from "lucide-react";
 import { FileTreeView } from "./components/FileTreeView";
 import { GitGraphOverlay, computeGitGraph } from "./components/GitGraphView";
@@ -34,6 +35,12 @@ interface ChangedFile {
   deletions: number;
 }
 
+interface RefTag {
+  name: string;
+  is_head: boolean;
+  is_tag: boolean;
+}
+
 interface CommitItem {
   sha: string;
   full_sha: string;
@@ -43,6 +50,7 @@ interface CommitItem {
   author_email: string;
   date: string;
   parent_shas: string[];
+  ref_tags: RefTag[];
   files: ChangedFile[];
   graph_col: number;
 }
@@ -74,7 +82,6 @@ export default function App() {
     return (localStorage.getItem("git_client_theme") as "light" | "dark") || "light";
   });
 
-  // 1. 用户手动添加的仓库列表
   const [repos, setRepos] = useState<RepoInfo[]>(() => {
     try {
       const saved = localStorage.getItem("git_client_manual_repos");
@@ -89,22 +96,68 @@ export default function App() {
   });
 
   const [repoDetails, setRepoDetails] = useState<RepoDetails | null>(null);
-
-  // 2. 选中提交：绝不默认选中任何提交
   const [selectedSha, setSelectedSha] = useState<string>("");
   const [filesCache, setFilesCache] = useState<Record<string, ChangedFile[]>>({});
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // 3. 手风琴状态：本地分支默认展开，远程分支默认折叠且位于最底部
+  // 分支过滤状态：null 表示展示全部分支大图，字符串表示仅看该分支
+  const [filterBranch, setFilterBranch] = useState<string | null>(null);
+
+  // 手风琴与折叠状态
   const [localBranchesOpen, setLocalBranchesOpen] = useState(true);
   const [remoteBranchesOpen, setRemoteBranchesOpen] = useState(false);
-
-  // 底部详情折叠状态：默认收起
   const [detailsCollapsed, setDetailsCollapsed] = useState(true);
+  const [collapsedBranchFolders, setCollapsedBranchFolders] = useState<Record<string, boolean>>({});
 
-  // 4. 面板尺寸拖拽状态与持久化
+  const applyBranchFilter = async (branchName: string | null) => {
+    if (!activeRepoPath) return;
+    setFilterBranch(branchName);
+    try {
+      const commits = await invoke<CommitItem[]>("get_commits", {
+        repoPath: activeRepoPath,
+        branch: branchName || null,
+      });
+      setRepoDetails((prev) => (prev ? { ...prev, commits } : prev));
+      setSelectedSha("");
+      setDetailsCollapsed(true);
+      setFilterBranch(null);
+    } catch (err) {
+      showToast("过滤分支历史失败: " + String(err));
+    }
+  };
+
+  const handleBranchClick = (branchName: string) => {
+    if (filterBranch === branchName) {
+      applyBranchFilter(null);
+    } else {
+      applyBranchFilter(branchName);
+    }
+  };
+
+  const handleBranchDoubleClick = (branchName: string) => {
+    handleCheckoutBranch(branchName);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && filterBranch) {
+        applyBranchFilter(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [filterBranch, activeRepoPath]);
+
+  const toggleBranchFolder = (folderName: string) => {
+    setCollapsedBranchFolders((prev) => ({
+      ...prev,
+      [folderName]: !prev[folderName],
+    }));
+  };
+
+  // 面板拖拽拉伸
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem("git_client_sidebar_width");
     return saved ? Math.max(170, Math.min(480, parseInt(saved, 10))) : 230;
@@ -130,7 +183,6 @@ export default function App() {
     localStorage.setItem("git_client_manual_repos", JSON.stringify(newRepos));
   };
 
-  // 加载仓库
   const loadRepo = useCallback(async (path: string) => {
     if (!path) return;
     setLoading(true);
@@ -148,7 +200,6 @@ export default function App() {
         return updated;
       });
 
-      // 绝不默认选中提交，清空当前选中项并默认收起详情
       setSelectedSha("");
       setDetailsCollapsed(true);
 
@@ -168,7 +219,6 @@ export default function App() {
     }
   }, []);
 
-  // 启动初始化加载
   useEffect(() => {
     if (repos.length > 0) {
       const target = repos.find((r) => r.path === activeRepoPath) || repos[0];
@@ -181,7 +231,6 @@ export default function App() {
     }
   }, []);
 
-  // 主题切换
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("git_client_theme", theme);
@@ -191,7 +240,6 @@ export default function App() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
   };
 
-  // 打开文件夹弹窗
   const handleOpenFolder = async () => {
     try {
       const selectedPath = await invoke<string | null>("open_folder_dialog");
@@ -220,7 +268,6 @@ export default function App() {
     }
   };
 
-  // 关闭仓库标签
   const handleCloseRepo = (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
     const remaining = repos.filter((r) => r.path !== path);
@@ -236,7 +283,6 @@ export default function App() {
     }
   };
 
-  // 切换分支
   const handleCheckoutBranch = async (branchName: string) => {
     if (!activeRepoPath) return;
     try {
@@ -251,7 +297,6 @@ export default function App() {
     }
   };
 
-  // 选中提交
   const handleSelectCommit = async (sha: string) => {
     setSelectedSha(sha);
     setDetailsCollapsed(false);
@@ -268,7 +313,6 @@ export default function App() {
     }
   };
 
-  // 复制 SHA
   const handleCopySha = (sha: string) => {
     navigator.clipboard.writeText(sha).then(() => {
       setCopied(true);
@@ -276,13 +320,11 @@ export default function App() {
     });
   };
 
-  // 拖拽调整侧边栏宽度
   const handleSidebarMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsResizingSidebar(true);
   };
 
-  // 拖拽调整底部详情栏高度
   const handleDetailsMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsResizingDetails(true);
@@ -323,6 +365,35 @@ export default function App() {
     };
   }, [isResizingSidebar, isResizingDetails]);
 
+  // 左侧分支按 / 层级自动归纳 (类似 IDEA 分支树)
+  const groupedLocalBranches = useMemo(() => {
+    if (!repoDetails) return { root: [], groups: [] };
+    const root: BranchItem[] = [];
+    const groupsMap = new Map<string, { branch: BranchItem; shortName: string }[]>();
+
+    for (const b of repoDetails.local_branches) {
+      if (b.name.includes("/")) {
+        const parts = b.name.split("/");
+        const folder = parts[0];
+        const shortName = parts.slice(1).join("/");
+        if (!groupsMap.has(folder)) {
+          groupsMap.set(folder, []);
+        }
+        groupsMap.get(folder)!.push({ branch: b, shortName });
+      } else {
+        root.push(b);
+      }
+    }
+
+    return {
+      root,
+      groups: Array.from(groupsMap.entries()).map(([folder, items]) => ({
+        folder,
+        items,
+      })),
+    };
+  }, [repoDetails]);
+
   const currentCommit = useMemo(() => {
     if (!selectedSha || !repoDetails || !repoDetails.commits) return null;
     return repoDetails.commits.find((c) => c.sha === selectedSha) || null;
@@ -351,11 +422,15 @@ export default function App() {
     [repoDetails?.commits]
   );
 
+  const activeBranchName = useMemo(() => {
+    return repoDetails?.local_branches.find((x) => x.is_head)?.name || repoDetails?.repo.branch || "main";
+  }, [repoDetails]);
+
   return (
     <div className="desktop-layout">
       {toastMessage && <div className="status-toast">{toastMessage}</div>}
 
-      {/* 1. 顶部仓库切换栏 (彻底去掉分支标签) */}
+      {/* 1. 顶部仓库切换栏 (无分支角标) */}
       <header className="top-navbar">
         <div className="tabs-cluster">
           {repos.map((r) => {
@@ -432,18 +507,18 @@ export default function App() {
         </div>
       ) : (
         <div className="workspace-body">
-          {/* 2. 左侧分支侧边栏 (支持手风琴折叠与水平拖拽调整) */}
+          {/* 2. 左侧分支侧边栏 (IDEA 风格：路径文件夹折叠 + 底部吸附远程分支) */}
           <aside
             className="branches-sidebar"
             style={{ width: `${sidebarWidth}px` }}
           >
-            {/* 侧边栏垂直拖拽把手 */}
             <div
               className={`sidebar-resizer ${isResizingSidebar ? "resizing" : ""}`}
               onMouseDown={handleSidebarMouseDown}
             />
 
-            {/* 本地分支手风琴 (默认展开) */}
+            <div className="sidebar-scroll-zone">
+            {/* 本地分支手风琴 */}
             <div className="accordion-section local-section">
               <button
                 className="accordion-header-btn"
@@ -455,14 +530,16 @@ export default function App() {
 
               {localBranchesOpen && (
                 <div className="accordion-body">
-                  {repoDetails?.local_branches.map((b) => {
-                    const isActive = b.name === (repoDetails.local_branches.find((x) => x.is_head)?.name || "main");
+                  {/* 顶层无斜杠分支 (例如 dev, main) */}
+                  {groupedLocalBranches.root.map((b) => {
+                    const isActive = b.name === activeBranchName;
                     return (
                       <button
                         key={b.name}
-                        className={`tree-node-item ${isActive ? "active" : ""}`}
-                        onClick={() => handleCheckoutBranch(b.name)}
-                        title={`点击检出分支 ${b.name}`}
+                        className={`tree-node-item ${isActive ? "active" : ""} ${filterBranch === b.name ? "filtered" : ""}`}
+                        onClick={() => handleBranchClick(b.name)}
+                        onDoubleClick={() => handleBranchDoubleClick(b.name)}
+                        title={`单击聚焦查看 ${b.name}，双击检出切换`}
                       >
                         {isActive ? (
                           <span className="active-point-dot" />
@@ -475,6 +552,52 @@ export default function App() {
                     );
                   })}
 
+                  {/* 路径目录分组 (例如 📁 feature, 📁 bugfix, 📁 hotfix) */}
+                  {groupedLocalBranches.groups.map((g) => {
+                    const isFolderCollapsed = collapsedBranchFolders[g.folder];
+                    return (
+                      <div key={g.folder} className="branch-folder-box">
+                        <button
+                          className="branch-folder-header"
+                          onClick={() => toggleBranchFolder(g.folder)}
+                        >
+                          {isFolderCollapsed ? (
+                            <ChevronRight size={11} style={{ color: "var(--ink-tertiary)" }} />
+                          ) : (
+                            <ChevronDown size={11} style={{ color: "var(--ink-tertiary)" }} />
+                          )}
+                          <Folder size={13} style={{ color: "var(--ink-secondary)" }} />
+                          <span>{g.folder}</span>
+                        </button>
+
+                        {!isFolderCollapsed && (
+                          <div className="branch-folder-items">
+                            {g.items.map(({ branch, shortName }) => {
+                              const isActive = branch.name === activeBranchName;
+                              return (
+                                <button
+                                  key={branch.name}
+                                  className={`tree-node-item ${isActive ? "active" : ""} ${filterBranch === branch.name ? "filtered" : ""}`}
+                                  onClick={() => handleBranchClick(branch.name)}
+                                  onDoubleClick={() => handleBranchDoubleClick(branch.name)}
+                                  title={`单击聚焦查看 ${branch.name}，双击检出切换`}
+                                >
+                                  {isActive ? (
+                                    <span className="active-point-dot" />
+                                  ) : (
+                                    <GitBranch size={13} />
+                                  )}
+                                  <span>{shortName}</span>
+                                  {branch.is_head && <span className="head-tag-badge">HEAD</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
                   {(!repoDetails || repoDetails.local_branches.length === 0) && (
                     <div style={{ padding: "6px 8px", fontSize: "12px", color: "var(--ink-tertiary)" }}>
                       无本地分支
@@ -484,8 +607,12 @@ export default function App() {
               )}
             </div>
 
-            {/* 远程分支手风琴 (置底吸附，默认折叠) */}
-            <div className="accordion-section remote-section">
+            {/* 远程分支手风琴 (未展开时置底吸附，展开时紧随本地分支身后排列) */}
+            <div
+              className={`accordion-section remote-section ${
+                remoteBranchesOpen ? "expanded-flow" : "collapsed-bottom"
+              }`}
+            >
               <button
                 className="accordion-header-btn"
                 onClick={() => setRemoteBranchesOpen((v) => !v)}
@@ -517,12 +644,33 @@ export default function App() {
                 </div>
               )}
             </div>
+            </div>
           </aside>
 
           {/* 右侧内容工作区 */}
           <main className="content-workspace">
-            {/* Git Log 拓扑图与提交列表 */}
+            {/* Git Log 拓扑图与提交列表 (全量分支 --all 呈现) */}
             <section className="git-log-view">
+              {/* 分支聚焦过滤胶囊条 (带关闭 ✕ 与数量指示) */}
+              {filterBranch && (
+                <div className="git-log-filter-bar">
+                  <div className="filter-branch-chip">
+                    <GitBranch size={11} className="chip-branch-icon" />
+                    <span className="chip-label">分支:</span>
+                    <span className="chip-name">{filterBranch}</span>
+                    <button
+                      className="chip-close-btn"
+                      onClick={() => applyBranchFilter(null)}
+                      title="关闭分支过滤，恢复全部分支 (快捷键 Esc)"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                  <span className="filter-count-hint">
+                    共 {repoDetails?.commits.length || 0} 条提交
+                  </span>
+                </div>
+              )}
               <div className="table-scroll-view">
                 <div className="table-scroll-canvas">
                   {repoDetails && repoDetails.commits.length > 0 && (
@@ -541,7 +689,6 @@ export default function App() {
                           className={`commit-line-row ${isRowActive ? "active" : ""}`}
                           onClick={() => handleSelectCommit(c.sha)}
                         >
-                          {/* 动态适配拓扑图轨道的占位宽度 */}
                           <div
                             style={{
                               width: `${graphWidth}px`,
@@ -556,6 +703,30 @@ export default function App() {
                               </span>
                             )}
                             <span>{c.msg}</span>
+                          </div>
+
+                          {/* 分支与版本标签独立列：统一位于提交人前 */}
+                          <div className="col-r-tags">
+                            {c.ref_tags && c.ref_tags.length > 0 && (
+                              <div className="ref-tags-container">
+                                {c.ref_tags.map((tag) => (
+                                  <span
+                                    key={tag.name}
+                                    className={`ref-tag-pill ${
+                                      tag.is_head
+                                        ? "head-tag"
+                                        : tag.is_tag
+                                        ? "version-tag"
+                                        : "branch-tag"
+                                    }`}
+                                    title={tag.is_head ? `当前检出分支: ${tag.name}` : `分支: ${tag.name}`}
+                                  >
+                                    <Tag size={10} />
+                                    <span>{tag.name}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
 
                           <div className="col-a-author">
@@ -589,7 +760,7 @@ export default function App() {
                     <ChevronUp size={13} />
                     <span>提交详情</span>
                   </span>
-                  {currentCommit ? (
+                  {currentCommit && (
                     <>
                       <span className="sha-pill-badge" style={{ padding: "1px 6px", fontSize: "11px" }}>
                         {currentCommit.sha}
@@ -599,8 +770,6 @@ export default function App() {
                         {currentCommit.msg}
                       </span>
                     </>
-                  ) : (
-                    <span style={{ color: "var(--ink-tertiary)" }}>未选择提交（点击展开）</span>
                   )}
                 </div>
 
@@ -693,7 +862,7 @@ export default function App() {
                     </>
                   ) : (
                     <div className="empty-view-state">
-                      <span style={{ color: "var(--ink-tertiary)" }}>未选择任何提交记录（点击上方列表查看详细 Diff 与文件树）</span>
+                      <span style={{ color: "var(--ink-tertiary)" }}>暂无选中的提交</span>
                     </div>
                   )}
                 </section>

@@ -281,15 +281,31 @@ html, body, #root {
   min-height: 0;
 }
 
-.accordion-section.local-section {
+.sidebar-scroll-zone {
   flex: 1;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  height: 100%;
+}
+
+.accordion-section.local-section {
   display: flex;
   flex-direction: column;
 }
 
-.accordion-section.remote-section {
+/* 远程分支未展开时：置底吸附 */
+.accordion-section.remote-section.collapsed-bottom {
   margin-top: auto;
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+  flex-shrink: 0;
+}
+
+/* 远程分支展开时：紧随本地分支身后排列，自然向下延展 */
+.accordion-section.remote-section.expanded-flow {
+  margin-top: 16px;
   border-top: 1px solid var(--hairline);
   padding-top: 8px;
   flex-shrink: 0;
@@ -938,4 +954,184 @@ html, body, #root {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
+}
+
+/* =========================================================
+   行内分支与标签胶囊 (类似 IDEA Branch Tags)
+   ========================================================= */
+.col-r-tags {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  margin-right: 12px;
+}
+
+.ref-tags-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.ref-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  line-height: 16px;
+  user-select: none;
+}
+
+/* 常规分支标签：浅翠绿底色 */
+.ref-tag-pill.branch-tag {
+  background-color: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+}
+[data-theme="dark"] .ref-tag-pill.branch-tag {
+  background-color: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+/* 当前 HEAD 分支：醒目琥珀金底色 */
+.ref-tag-pill.head-tag {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  font-weight: 600;
+}
+[data-theme="dark"] .ref-tag-pill.head-tag {
+  background-color: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+/* Release Tag 标签：淡紫罗兰底 */
+.ref-tag-pill.version-tag {
+  background-color: rgba(139, 92, 246, 0.12);
+  color: #7c3aed;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+}
+
+/* 分支文件夹子级缩进 */
+.branch-folder-box {
+  display: flex;
+  flex-direction: column;
+}
+
+.branch-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  user-select: none;
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  transition: all 0.1s ease;
+}
+
+.branch-folder-header:hover {
+  background-color: var(--row-hover);
+  color: var(--ink);
+}
+
+.branch-folder-items {
+  margin-left: 12px;
+  padding-left: 8px;
+  border-left: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* =========================================================
+   Git Log 顶部过滤胶囊栏 (类似 Vercel / GitHub Filter Chip)
+   ========================================================= */
+.git-log-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background-color: var(--surface);
+  border-bottom: 1px solid var(--hairline-subtle);
+  animation: fadeIn 0.15s ease;
+  flex-shrink: 0;
+  z-index: 5;
+}
+
+.filter-branch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border-radius: 12px;
+  background-color: var(--chip-bg);
+  border: 1px solid var(--hairline-strong);
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  color: var(--ink);
+  user-select: none;
+}
+
+.chip-branch-icon {
+  color: var(--ink-secondary);
+}
+
+.chip-label {
+  color: var(--ink-tertiary);
+  font-size: 11px;
+}
+
+.chip-name {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.chip-close-btn {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  margin-left: 2px;
+  transition: all 0.1s ease;
+}
+
+.chip-close-btn:hover {
+  background-color: var(--hairline-strong);
+  color: var(--ink);
+}
+
+.filter-count-hint {
+  font-size: 11px;
+  color: var(--ink-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* 分支过滤激活态 */
+.tree-node-item.filtered {
+  border-color: var(--hairline-strong);
+  background-color: var(--row-hover);
+  color: var(--ink);
+  font-weight: 600;
 }
