@@ -1,0 +1,25 @@
+# Node & dependencies
+node_modules/
+**/node_modules/
+
+# Rust build artifacts
+target/
+**/target/
+**/*.app
+**/*.dmg
+
+# Frontend build outputs
+dist/
+**/dist/
+dist-ssr/
+
+# OS & editor files
+.DS_Store
+**/.DS_Store
+*.log
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Tauri generated schemas
+**/gen/schemas/
