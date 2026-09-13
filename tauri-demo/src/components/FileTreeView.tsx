@@ -188,8 +188,24 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files }) => {
         <FileIcon filename={node.name} size={16} />
         <span className="tree-file-name">{node.name}</span>
         <div className="diff-tags-cluster" style={{ marginLeft: "auto" }}>
-          <span className="diff-watercolor-tag add">+{node.additions}</span>
-          <span className="diff-watercolor-tag del">-{node.deletions}</span>
+          {node.additions > 0 && (
+            <span className="diff-watercolor-tag add">+{node.additions}</span>
+          )}
+          {node.deletions > 0 && (
+            <span className="diff-watercolor-tag del">-{node.deletions}</span>
+          )}
+          {node.additions === 0 && node.deletions === 0 && (
+            <span
+              className="diff-watercolor-tag"
+              style={{
+                backgroundColor: "var(--chip-bg)",
+                color: "var(--ink-tertiary)",
+                border: "1px solid var(--hairline)",
+              }}
+            >
+              0
+            </span>
+          )}
         </div>
       </div>
     );

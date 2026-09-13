@@ -803,8 +803,12 @@ export default function App() {
                 <div className="collapsed-bar-right">
                   {currentCommit && currentFiles.length > 0 && (
                     <div className="diff-tags-cluster">
-                      <span className="diff-watercolor-tag add">+{diffStats.adds}</span>
-                      <span className="diff-watercolor-tag del">-{diffStats.dels}</span>
+                      {diffStats.adds > 0 && (
+                        <span className="diff-watercolor-tag add">+{diffStats.adds}</span>
+                      )}
+                      {diffStats.dels > 0 && (
+                        <span className="diff-watercolor-tag del">-{diffStats.dels}</span>
+                      )}
                     </div>
                   )}
                   <button
