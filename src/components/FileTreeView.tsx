@@ -158,7 +158,6 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ diffText, filename }) => {
               return (
                 <div key={idx} className="diff-row diff-meta-row">
                   <div className="diff-col-gutter" />
-                  <div className="diff-col-gutter" />
                   <div className="diff-col-sign" />
                   <div className="diff-col-code meta-text">{line.content}</div>
                 </div>
@@ -167,9 +166,8 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ diffText, filename }) => {
             if (line.type === "hunk") {
               return (
                 <div key={idx} className="diff-row diff-hunk-row">
-                  <div className="diff-col-gutter" />
-                  <div className="diff-col-gutter" />
-                  <div className="diff-col-sign" />
+                  <div className="diff-col-gutter">...</div>
+                  <div className="diff-col-sign">@</div>
                   <div className="diff-col-code hunk-text">{line.content}</div>
                 </div>
               );
@@ -178,20 +176,23 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ diffText, filename }) => {
               return (
                 <div key={idx} className="diff-row diff-info-row">
                   <div className="diff-col-gutter" />
-                  <div className="diff-col-gutter" />
                   <div className="diff-col-sign">~</div>
                   <div className="diff-col-code info-text">{line.content}</div>
                 </div>
               );
             }
 
+            const lineNum =
+              line.type === "del"
+                ? line.oldLineNumber
+                : line.newLineNumber != null
+                ? line.newLineNumber
+                : line.oldLineNumber;
+
             return (
               <div key={idx} className={`diff-row diff-${line.type}-row`}>
-                <div className="diff-col-gutter old-num">
-                  {line.oldLineNumber != null ? line.oldLineNumber : ""}
-                </div>
-                <div className="diff-col-gutter new-num">
-                  {line.newLineNumber != null ? line.newLineNumber : ""}
+                <div className="diff-col-gutter">
+                  {lineNum != null ? lineNum : ""}
                 </div>
                 <div className="diff-col-sign">
                   {line.type === "add" ? "+" : line.type === "del" ? "-" : " "}
@@ -392,17 +393,7 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
               )}
             </div>
 
-            {/* 右侧末尾开闭按钮 (文件夹正常折叠/展开) */}
-            <button
-              className="tree-row-action-btn folder-toggle-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleCollapse(node.id);
-              }}
-              title={isCollapsed ? "展开文件夹" : "收起文件夹"}
-            >
-              <ChevronDown size={13} className={`tree-folder-action-icon ${!isCollapsed ? "open" : ""}`} />
-            </button>
+
           </div>
 
           <div className={`tree-children-collapse-wrapper ${!isCollapsed ? "expanded" : "collapsed"}`}>
