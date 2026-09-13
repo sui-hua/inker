@@ -5,8 +5,6 @@ import {
   FolderOpen,
     ChevronDown,
   FileDiff,
-  Copy,
-  Check,
   RefreshCw,
 } from "lucide-react";
 import { FileIcon } from "./FileIcon";
@@ -112,20 +110,25 @@ function parseGitDiff(diffText: string): DiffLine[] {
 
 interface DiffViewerProps {
   diffText: string;
-  filename: string;
+  filename?: string;
 }
 
-const DiffViewer: React.FC<DiffViewerProps> = ({ diffText, filename }) => {
-  const [copied, setCopied] = useState(false);
+const DiffViewer: React.FC<DiffViewerProps> = ({ diffText }) => {
   const parsedLines = useMemo(() => parseGitDiff(diffText), [diffText]);
 
-  const handleCopy = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(diffText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
+  // 计算行号最大值及所需位数，动态自适应宽度，避免个位数时产生奇怪空白
+  const maxLine = useMemo(() => {
+    let m = 0;
+    for (const l of parsedLines) {
+      if (l.oldLineNumber && l.oldLineNumber > m) m = l.oldLineNumber;
+      if (l.newLineNumber && l.newLineNumber > m) m = l.newLineNumber;
+    }
+    return m;
+  }, [parsedLines]);
+
+  const digits = Math.max(1, maxLine > 0 ? String(maxLine).length : 1);
+  // 单数字时只需约 18px (留 5px 内边距)，个位数紧凑不空旷，多位数自动扩展
+  const gutterWidth = Math.max(18, digits * 7 + 10);
 
   if (!diffText.trim() || parsedLines.length === 0) {
     return (
@@ -137,27 +140,13 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ diffText, filename }) => {
 
   return (
     <div className="file-diff-card" onClick={(e) => e.stopPropagation()}>
-      <div className="diff-card-toolbar">
-        <span className="diff-card-filepath" title={filename}>
-          {filename}
-        </span>
-        <button
-          className="diff-copy-action-btn"
-          onClick={handleCopy}
-          title="复制当前文件的 Diff 补丁"
-        >
-          {copied ? <Check size={11} /> : <Copy size={11} />}
-          <span>{copied ? "已复制" : "复制 Diff"}</span>
-        </button>
-      </div>
-
       <div className="diff-lines-scroller">
         <div className="diff-lines-table">
           {parsedLines.map((line, idx) => {
             if (line.type === "meta") {
               return (
                 <div key={idx} className="diff-row diff-meta-row">
-                  <div className="diff-col-gutter" />
+                  <div className="diff-col-gutter" style={{ width: `${gutterWidth}px` }} />
                   <div className="diff-col-sign" />
                   <div className="diff-col-code meta-text">{line.content}</div>
                 </div>
@@ -166,7 +155,7 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ diffText, filename }) => {
             if (line.type === "hunk") {
               return (
                 <div key={idx} className="diff-row diff-hunk-row">
-                  <div className="diff-col-gutter">...</div>
+                  <div className="diff-col-gutter" style={{ width: `${gutterWidth}px` }}>...</div>
                   <div className="diff-col-sign">@</div>
                   <div className="diff-col-code hunk-text">{line.content}</div>
                 </div>
@@ -175,7 +164,7 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ diffText, filename }) => {
             if (line.type === "info") {
               return (
                 <div key={idx} className="diff-row diff-info-row">
-                  <div className="diff-col-gutter" />
+                  <div className="diff-col-gutter" style={{ width: `${gutterWidth}px` }} />
                   <div className="diff-col-sign">~</div>
                   <div className="diff-col-code info-text">{line.content}</div>
                 </div>
@@ -191,7 +180,7 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ diffText, filename }) => {
 
             return (
               <div key={idx} className={`diff-row diff-${line.type}-row`}>
-                <div className="diff-col-gutter">
+                <div className="diff-col-gutter" style={{ width: `${gutterWidth}px` }}>
                   {lineNum != null ? lineNum : ""}
                 </div>
                 <div className="diff-col-sign">
@@ -371,7 +360,7 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
         <div key={node.id} className="file-tree-branch">
           <div
             className="file-tree-folder-row"
-            style={{ paddingLeft: `${paddingLeft}px` }}
+            style={{ marginLeft: `${paddingLeft}px` }}
             onClick={() => toggleCollapse(node.id)}
             title={node.fullPath}
           >
@@ -411,7 +400,7 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
       <div key={node.id} className="file-tree-item-wrapper">
         <div
           className={`file-tree-item-row ${isDiffOpen ? "diff-expanded" : ""}`}
-          style={{ paddingLeft: `${paddingLeft}px` }}
+          style={{ marginLeft: `${paddingLeft}px` }}
           onClick={() => toggleDiff(node)}
           title={node.fullPath}
         >
@@ -460,7 +449,7 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
           <div className="file-diff-collapse-inner">
             <div
               className="file-diff-block-wrapper"
-              style={{ paddingLeft: `${paddingLeft + 16}px` }}
+              style={{ marginLeft: `${paddingLeft}px` }}
             >
               {loadingDiffs[node.fullPath] ? (
                 <div className="file-diff-card empty-card">

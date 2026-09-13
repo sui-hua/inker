@@ -697,8 +697,9 @@ html, body, #root {
   height: 28px;
   display: flex;
   align-items: center;
-  padding-right: 8px;
+  padding: 0 8px 0 6px;
   border-radius: var(--radius-sm);
+  box-sizing: border-box;
   cursor: pointer;
   user-select: none;
   transition: background-color 0.1s ease;
@@ -713,8 +714,9 @@ html, body, #root {
   height: 28px;
   display: flex;
   align-items: center;
-  padding-right: 8px;
+  padding: 0 8px 0 6px;
   border-radius: var(--radius-sm);
+  box-sizing: border-box;
   cursor: pointer;
   user-select: none;
   transition: background-color 0.1s ease;
@@ -870,8 +872,8 @@ html, body, #root {
 }
 
 .diff-col-gutter {
-  width: 38px;
-  padding: 0 8px;
+  min-width: 18px;
+  padding: 0 5px;
   text-align: right;
   color: var(--ink-tertiary);
   user-select: none;
