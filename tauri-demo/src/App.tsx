@@ -422,9 +422,6 @@ export default function App() {
     [repoDetails?.commits]
   );
 
-  const activeBranchName = useMemo(() => {
-    return repoDetails?.local_branches.find((x) => x.is_head)?.name || repoDetails?.repo.branch || "main";
-  }, [repoDetails]);
 
   return (
     <div className="desktop-layout">
@@ -520,34 +517,56 @@ export default function App() {
             <div className="sidebar-scroll-zone">
             {/* 本地分支手风琴 */}
             <div className="accordion-section local-section">
-              <button
+              <div
                 className="accordion-header-btn"
                 onClick={() => setLocalBranchesOpen((v) => !v)}
+                style={{ cursor: "pointer" }}
               >
                 <span>本地分支</span>
+                {filterBranch && (
+                  <button
+                    className="clear-branch-filter-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      applyBranchFilter(null);
+                    }}
+                    title="清除分支筛选，显示全部"
+                  >
+                    <span>关闭筛选</span>
+                    <X size={10} />
+                  </button>
+                )}
                 {localBranchesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              </button>
+              </div>
 
               {localBranchesOpen && (
                 <div className="accordion-body">
                   {/* 顶层无斜杠分支 (例如 dev, main) */}
                   {groupedLocalBranches.root.map((b) => {
-                    const isActive = b.name === activeBranchName;
+                    const isSelected = filterBranch === b.name;
                     return (
                       <button
                         key={b.name}
-                        className={`tree-node-item ${isActive ? "active" : ""} ${filterBranch === b.name ? "filtered" : ""}`}
+                        className={`tree-node-item ${isSelected ? "selected-filter" : ""}`}
                         onClick={() => handleBranchClick(b.name)}
                         onDoubleClick={() => handleBranchDoubleClick(b.name)}
                         title={`单击聚焦查看 ${b.name}，双击检出切换`}
                       >
-                        {isActive ? (
-                          <span className="active-point-dot" />
-                        ) : (
-                          <GitBranch size={13} />
-                        )}
+                        <GitBranch size={13} />
                         <span>{b.name}</span>
                         {b.is_head && <span className="head-tag-badge">HEAD</span>}
+                        {isSelected && (
+                          <span
+                            className="branch-clear-x"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              applyBranchFilter(null);
+                            }}
+                            title="取消查看此分支，显示全部"
+                          >
+                            <X size={11} />
+                          </span>
+                        )}
                       </button>
                     );
                   })}
@@ -573,22 +592,30 @@ export default function App() {
                         {!isFolderCollapsed && (
                           <div className="branch-folder-items">
                             {g.items.map(({ branch, shortName }) => {
-                              const isActive = branch.name === activeBranchName;
+                              const isSelected = filterBranch === branch.name;
                               return (
                                 <button
                                   key={branch.name}
-                                  className={`tree-node-item ${isActive ? "active" : ""} ${filterBranch === branch.name ? "filtered" : ""}`}
+                                  className={`tree-node-item ${isSelected ? "selected-filter" : ""}`}
                                   onClick={() => handleBranchClick(branch.name)}
                                   onDoubleClick={() => handleBranchDoubleClick(branch.name)}
                                   title={`单击聚焦查看 ${branch.name}，双击检出切换`}
                                 >
-                                  {isActive ? (
-                                    <span className="active-point-dot" />
-                                  ) : (
-                                    <GitBranch size={13} />
-                                  )}
+                                  <GitBranch size={13} />
                                   <span>{shortName}</span>
                                   {branch.is_head && <span className="head-tag-badge">HEAD</span>}
+                                  {isSelected && (
+                                    <span
+                                      className="branch-clear-x"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        applyBranchFilter(null);
+                                      }}
+                                      title="取消查看此分支，显示全部"
+                                    >
+                                      <X size={11} />
+                                    </span>
+                                  )}
                                 </button>
                               );
                             })}
