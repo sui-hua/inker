@@ -3,11 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder,
   FolderOpen,
-    ChevronDown,
+  ChevronDown,
   FileDiff,
   RefreshCw,
 } from "lucide-react";
 import { FileIcon } from "./FileIcon";
+import { DiffViewer } from "./DiffViewer";
 
 export interface ChangedFile {
   name: string;
@@ -26,175 +27,6 @@ export interface FileTreeNode {
   additions: number;
   deletions: number;
 }
-
-interface DiffLine {
-  type: "meta" | "hunk" | "add" | "del" | "normal" | "info";
-  oldLineNumber?: number | null;
-  newLineNumber?: number | null;
-  content: string;
-}
-
-function parseGitDiff(diffText: string): DiffLine[] {
-  if (!diffText || !diffText.trim()) return [];
-  const lines = diffText.split("\n");
-  const result: DiffLine[] = [];
-  let oldLine = 0;
-  let newLine = 0;
-  let hunkCount = 0;
-
-  for (const line of lines) {
-    // 过滤掉所有底层 Git patch 协议头 (diff --git, index, ---, +++, mode 等元信息)
-    if (
-      line.startsWith("diff --git") ||
-      line.startsWith("index ") ||
-      line.startsWith("--- ") ||
-      line.startsWith("+++ ") ||
-      line.startsWith("new file mode") ||
-      line.startsWith("deleted file mode") ||
-      line.startsWith("old mode") ||
-      line.startsWith("new mode") ||
-      line.startsWith("similarity index") ||
-      line.startsWith("rename from") ||
-      line.startsWith("rename to")
-    ) {
-      continue;
-    }
-
-    if (line.startsWith("@@")) {
-      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)/);
-      if (match) {
-        oldLine = parseInt(match[1], 10);
-        newLine = parseInt(match[3], 10);
-      }
-      hunkCount++;
-      // 若非首个 hunk 或不是从第一行开始的变更，展示分段跳转提示
-      if (hunkCount > 1 || oldLine > 1 || newLine > 1) {
-        result.push({
-          type: "hunk",
-          content: line.trim(),
-        });
-      }
-    } else if (line.startsWith("+") && !line.startsWith("+++")) {
-      result.push({
-        type: "add",
-        newLineNumber: newLine,
-        content: line.slice(1),
-      });
-      newLine++;
-    } else if (line.startsWith("-") && !line.startsWith("---")) {
-      result.push({
-        type: "del",
-        oldLineNumber: oldLine,
-        content: line.slice(1),
-      });
-      oldLine++;
-    } else if (line.startsWith(" ")) {
-      result.push({
-        type: "normal",
-        oldLineNumber: oldLine,
-        newLineNumber: newLine,
-        content: line.slice(1),
-      });
-      oldLine++;
-      newLine++;
-    } else if (line.startsWith("\\")) {
-      result.push({
-        type: "info",
-        content: line,
-      });
-    }
-  }
-
-  return result;
-}
-
-interface DiffViewerProps {
-  diffText: string;
-  filename?: string;
-}
-
-const DiffViewer: React.FC<DiffViewerProps> = ({ diffText }) => {
-  const parsedLines = useMemo(() => parseGitDiff(diffText), [diffText]);
-
-  // 计算行号最大值及所需位数，动态自适应宽度，避免个位数时产生奇怪空白
-  const maxLine = useMemo(() => {
-    let m = 0;
-    for (const l of parsedLines) {
-      if (l.oldLineNumber && l.oldLineNumber > m) m = l.oldLineNumber;
-      if (l.newLineNumber && l.newLineNumber > m) m = l.newLineNumber;
-    }
-    return m;
-  }, [parsedLines]);
-
-  const digits = Math.max(1, maxLine > 0 ? String(maxLine).length : 1);
-  // 单数字时只需约 18px (留 5px 内边距)，个位数紧凑不空旷，多位数自动扩展
-  const gutterWidth = Math.max(18, digits * 7 + 10);
-
-  if (!diffText.trim() || parsedLines.length === 0) {
-    return (
-      <div className="file-diff-card empty-card" onClick={(e) => e.stopPropagation()}>
-        <span className="diff-empty-hint">此文件无文本差异或为二进制文件</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="file-diff-card" onClick={(e) => e.stopPropagation()}>
-      <div className="diff-lines-scroller">
-        <div className="diff-lines-table">
-          {parsedLines.map((line, idx) => {
-            if (line.type === "meta") {
-              return (
-                <div key={idx} className="diff-row diff-meta-row">
-                  <div className="diff-col-gutter" style={{ width: `${gutterWidth}px` }} />
-                  <div className="diff-col-sign" />
-                  <div className="diff-col-code meta-text">{line.content}</div>
-                </div>
-              );
-            }
-            if (line.type === "hunk") {
-              return (
-                <div key={idx} className="diff-row diff-hunk-row">
-                  <div className="diff-col-gutter" style={{ width: `${gutterWidth}px` }}>...</div>
-                  <div className="diff-col-sign">@</div>
-                  <div className="diff-col-code hunk-text">{line.content}</div>
-                </div>
-              );
-            }
-            if (line.type === "info") {
-              return (
-                <div key={idx} className="diff-row diff-info-row">
-                  <div className="diff-col-gutter" style={{ width: `${gutterWidth}px` }} />
-                  <div className="diff-col-sign">~</div>
-                  <div className="diff-col-code info-text">{line.content}</div>
-                </div>
-              );
-            }
-
-            const lineNum =
-              line.type === "del"
-                ? line.oldLineNumber
-                : line.newLineNumber != null
-                ? line.newLineNumber
-                : line.oldLineNumber;
-
-            return (
-              <div key={idx} className={`diff-row diff-${line.type}-row`}>
-                <div className="diff-col-gutter" style={{ width: `${gutterWidth}px` }}>
-                  {lineNum != null ? lineNum : ""}
-                </div>
-                <div className="diff-col-sign">
-                  {line.type === "add" ? "+" : line.type === "del" ? "-" : " "}
-                </div>
-                <div className="diff-col-code">{line.content}</div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-};
 
 export function buildFileTree(files: ChangedFile[]): FileTreeNode[] {
   interface TempNode {
@@ -306,15 +138,34 @@ interface FileTreeViewProps {
 
 export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, commitSha }) => {
   const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>({});
-  const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
   const [diffsCache, setDiffsCache] = useState<Record<string, string>>({});
-  const [loadingDiffs, setLoadingDiffs] = useState<Record<string, boolean>>({});
-  const [diffErrors, setDiffErrors] = useState<Record<string, string>>({});
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [modalDiffFile, setModalDiffFile] = useState<{
+    fullPath: string;
+    diffText: string;
+    additions?: number;
+    deletions?: number;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
 
-  // 切换 commit 时，清空已展开的 diff
+  // 切换 commit 时清空弹窗
   useEffect(() => {
-    setExpandedDiffs({});
+    setModalDiffFile(null);
+    setIsMaximized(false);
   }, [commitSha]);
+
+  // Esc 键关闭独立 Diff 弹窗
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && modalDiffFile) {
+        setModalDiffFile(null);
+        setIsMaximized(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [modalDiffFile]);
 
   const toggleCollapse = (dirId: string) => {
     setCollapsedDirs((prev) => ({
@@ -323,28 +174,47 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
     }));
   };
 
-  const toggleDiff = async (node: FileTreeNode) => {
-    const nextState = !expandedDiffs[node.id];
-    setExpandedDiffs((prev) => ({
-      ...prev,
-      [node.id]: nextState,
-    }));
+  // 点击文件直接唤起专属全屏大窗口对比
+  const handleOpenFileDiff = async (node: FileTreeNode) => {
+    if (!repoPath || !commitSha) return;
 
-    if (nextState && !diffsCache[node.fullPath] && repoPath && commitSha) {
-      setLoadingDiffs((prev) => ({ ...prev, [node.fullPath]: true }));
-      setDiffErrors((prev) => ({ ...prev, [node.fullPath]: "" }));
-      try {
-        const diff = await invoke<string>("get_file_diff", {
-          repoPath,
-          sha: commitSha,
-          filePath: node.fullPath,
-        });
-        setDiffsCache((prev) => ({ ...prev, [node.fullPath]: diff }));
-      } catch (err) {
-        setDiffErrors((prev) => ({ ...prev, [node.fullPath]: String(err) }));
-      } finally {
-        setLoadingDiffs((prev) => ({ ...prev, [node.fullPath]: false }));
-      }
+    if (diffsCache[node.fullPath] !== undefined) {
+      setModalDiffFile({
+        fullPath: node.fullPath,
+        diffText: diffsCache[node.fullPath],
+        additions: node.additions,
+        deletions: node.deletions,
+        loading: false,
+      });
+      return;
+    }
+
+    setModalDiffFile({
+      fullPath: node.fullPath,
+      diffText: "",
+      additions: node.additions,
+      deletions: node.deletions,
+      loading: true,
+    });
+
+    try {
+      const diff = await invoke<string>("get_file_diff", {
+        repoPath,
+        sha: commitSha,
+        filePath: node.fullPath,
+      });
+      setDiffsCache((prev) => ({ ...prev, [node.fullPath]: diff }));
+      setModalDiffFile((prev) =>
+        prev && prev.fullPath === node.fullPath
+          ? { ...prev, diffText: diff, loading: false }
+          : prev
+      );
+    } catch (err) {
+      setModalDiffFile((prev) =>
+        prev && prev.fullPath === node.fullPath
+          ? { ...prev, error: String(err), loading: false }
+          : prev
+      );
     }
   };
 
@@ -352,7 +222,6 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
 
   const renderNode = (node: FileTreeNode, depth = 0) => {
     const isCollapsed = collapsedDirs[node.id];
-    const isDiffOpen = expandedDiffs[node.id];
     const paddingLeft = depth * 18 + 6;
 
     if (node.isFolder) {
@@ -381,8 +250,6 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
                 <span className="diff-watercolor-tag del">-{node.deletions}</span>
               )}
             </div>
-
-
           </div>
 
           <div className={`tree-children-collapse-wrapper ${!isCollapsed ? "expanded" : "collapsed"}`}>
@@ -399,10 +266,10 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
     return (
       <div key={node.id} className="file-tree-item-wrapper">
         <div
-          className={`file-tree-item-row ${isDiffOpen ? "diff-expanded" : ""}`}
+          className="file-tree-item-row"
           style={{ marginLeft: `${paddingLeft}px` }}
-          onClick={() => toggleDiff(node)}
-          title={node.fullPath}
+          onClick={() => handleOpenFileDiff(node)}
+          title={`点击在新窗口查看对比: ${node.fullPath}`}
         >
           <span className="tree-chevron-placeholder" />
           <FileIcon filename={node.name} size={16} />
@@ -430,48 +297,17 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
             )}
           </div>
 
-          {/* 右侧末尾开闭按钮 (文件则切换展示 Diff) */}
+          {/* 右侧直接唤起独立 Diff 窗口按钮 */}
           <button
-            className={`tree-row-action-btn file-diff-toggle-btn ${isDiffOpen ? "active" : ""}`}
+            className="tree-row-action-btn file-diff-toggle-btn"
             onClick={(e) => {
               e.stopPropagation();
-              toggleDiff(node);
+              handleOpenFileDiff(node);
             }}
-            title={isDiffOpen ? "收起代码差异" : "查看代码差异"}
+            title="在新窗口查看代码对比"
           >
             <FileDiff size={13} />
-            <ChevronDown size={11} className={`file-diff-chevron-icon ${isDiffOpen ? "open" : ""}`} />
           </button>
-        </div>
-
-        {/* 展开展示 Diff 对比视图 (平滑折叠动画) */}
-        <div className={`file-diff-collapse-wrapper ${isDiffOpen ? "expanded" : "collapsed"}`}>
-          <div className="file-diff-collapse-inner">
-            <div
-              className="file-diff-block-wrapper"
-              style={{ marginLeft: `${paddingLeft}px` }}
-            >
-              {loadingDiffs[node.fullPath] ? (
-                <div className="file-diff-card empty-card">
-                  <div className="file-diff-loading">
-                    <RefreshCw size={13} className="spin-icon" />
-                    <span>正在加载 {node.name} 的变更对比...</span>
-                  </div>
-                </div>
-              ) : diffErrors[node.fullPath] ? (
-                <div className="file-diff-card empty-card">
-                  <div className="file-diff-error">
-                    加载差异失败: {diffErrors[node.fullPath]}
-                  </div>
-                </div>
-              ) : (
-                <DiffViewer
-                  diffText={diffsCache[node.fullPath] || ""}
-                  filename={node.fullPath}
-                />
-              )}
-            </div>
-          </div>
         </div>
       </div>
     );
@@ -480,6 +316,56 @@ export const FileTreeView: React.FC<FileTreeViewProps> = ({ files, repoPath, com
   return (
     <div className="file-tree-container">
       {tree.map((rootNode) => renderNode(rootNode, 0))}
+
+      {modalDiffFile && (
+        <div
+          className="diff-modal-overlay"
+          onClick={() => {
+            setModalDiffFile(null);
+            setIsMaximized(false);
+          }}
+        >
+          <div
+            className={`diff-modal-window ${isMaximized ? "is-maximized" : ""}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {modalDiffFile.loading ? (
+              <div className="diff-modal-loading-box">
+                <RefreshCw size={18} className="spin-icon" />
+                <span>正在加载 {modalDiffFile.fullPath} 的代码差异...</span>
+              </div>
+            ) : modalDiffFile.error ? (
+              <div className="diff-modal-error-box">
+                <span>加载文件差异失败: {modalDiffFile.error}</span>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setModalDiffFile(null);
+                    setIsMaximized(false);
+                  }}
+                >
+                  关闭
+                </button>
+              </div>
+            ) : (
+              <DiffViewer
+                diffText={modalDiffFile.diffText}
+                filePath={modalDiffFile.fullPath}
+                additions={modalDiffFile.additions}
+                deletions={modalDiffFile.deletions}
+                isExpandedModal={true}
+                isMaximized={isMaximized}
+                onToggleMaximize={() => setIsMaximized(!isMaximized)}
+                onCloseModal={() => {
+                  setModalDiffFile(null);
+                  setIsMaximized(false);
+                }}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

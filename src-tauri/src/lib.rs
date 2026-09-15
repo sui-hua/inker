@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -30,7 +30,6 @@ pub struct CommitItem {
     pub sha: String,
     pub full_sha: String,
     pub msg: String,
-    pub prefix: String,
     pub author: String,
     pub author_email: String,
     pub date: String,
@@ -53,6 +52,13 @@ pub struct RepoDetails {
     pub local_branches: Vec<BranchItem>,
     pub remote_branches: Vec<BranchItem>,
     pub commits: Vec<CommitItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatusFile {
+    pub path: String,
+    pub status: String,
+    pub staged: bool,
 }
 
 fn determine_file_type(filename: &str) -> String {
@@ -78,30 +84,6 @@ fn determine_file_type(filename: &str) -> String {
     } else {
         "FILE".into()
     }
-}
-
-fn extract_prefix_and_msg(raw_subject: &str) -> (String, String) {
-    let s = raw_subject.trim();
-    let prefixes = [
-        "fix:", "feat:", "merge:", "chore:", "docs:", "style:", "refactor:", "perf:", "test:",
-        "build:", "ci:", "revert:",
-    ];
-
-    for p in prefixes {
-        if s.to_lowercase().starts_with(p) {
-            let prefix = &s[..p.len()];
-            let msg = s[p.len()..].trim();
-            return (prefix.to_string(), msg.to_string());
-        }
-    }
-
-    if s.to_lowercase().starts_with("merge branch")
-        || s.to_lowercase().starts_with("merge remote-tracking branch")
-    {
-        return ("merge:".to_string(), s.to_string());
-    }
-
-    ("".to_string(), s.to_string())
 }
 
 fn parse_ref_tags(raw_d: &str) -> Vec<RefTag> {
@@ -159,7 +141,14 @@ fn clean_git_path(raw: &str) -> String {
 }
 
 fn run_git_in(repo_path: &str, args: &[&str]) -> Result<String, String> {
-    let mut full_args = vec!["-c", "core.quotepath=false"];
+    let mut full_args = vec![
+        "-c",
+        "core.quotepath=false",
+        "-c",
+        "i18n.logOutputEncoding=utf-8",
+        "-c",
+        "i18n.commitEncoding=utf-8",
+    ];
     full_args.extend_from_slice(args);
 
     let output = Command::new("git")
@@ -235,8 +224,7 @@ fn fetch_commits_internal(repo_path: &str, branch: Option<&str>) -> Vec<CommitIt
     args.push("--date=format:%Y-%m-%d %H:%M");
 
     if let Ok(log_output) = run_git_in(repo_path, &args) {
-        let lines: Vec<&str> = log_output.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
+        for line in log_output.lines() {
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() >= 6 {
                 let sha = parts[0].to_string();
@@ -260,25 +248,16 @@ fn fetch_commits_internal(repo_path: &str, branch: Option<&str>) -> Vec<CommitIt
                     Vec::new()
                 };
 
-                let (prefix, msg) = extract_prefix_and_msg(raw_subject);
-
-                let files = if i < 10 {
-                    fetch_commit_files(repo_path, &sha)
-                } else {
-                    Vec::new()
-                };
-
                 commits.push(CommitItem {
                     sha,
                     full_sha,
-                    msg,
-                    prefix,
+                    msg: raw_subject.trim().to_string(),
                     author,
                     author_email,
                     date,
                     parent_shas: parents,
                     ref_tags,
-                    files,
+                    files: Vec::new(),
                     graph_col: 0,
                 });
             }
@@ -300,9 +279,11 @@ fn load_repository(repo_path: String) -> Result<RepoDetails, String> {
         return Err("指定的目录不存在".into());
     }
 
-    let is_git = run_git_in(&repo_path, &["rev-parse", "--is-inside-work-tree"])
-        .map(|s| s == "true")
-        .unwrap_or(false);
+    // 优先用快速本地文件探测 .git，避免启动 git 进程
+    let is_git = p.join(".git").exists()
+        || run_git_in(&repo_path, &["rev-parse", "--is-inside-work-tree"])
+            .map(|s| s == "true")
+            .unwrap_or(false);
 
     if !is_git {
         return Err("该目录不是一个合法的 Git 仓库（缺少 .git）".into());
@@ -312,19 +293,12 @@ fn load_repository(repo_path: String) -> Result<RepoDetails, String> {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "repository".into());
-    let current_branch = get_repo_branch(&repo_path);
 
-    let repo = RepoInfo {
-        id: repo_path.clone(),
-        name,
-        path: repo_path.clone(),
-        branch: current_branch,
-    };
-
-    // 1. 读取真实分支
+    let mut current_branch = String::new();
     let mut local_branches = Vec::new();
     let mut remote_branches = Vec::new();
 
+    // 1. 读取真实分支，同时直接提取当前活跃分支 (HEAD)，避免重复发起单独进程
     if let Ok(branch_output) = run_git_in(
         &repo_path,
         &["branch", "-a", "--format=%(refname)|%(refname:short)|%(HEAD)"],
@@ -335,6 +309,10 @@ fn load_repository(repo_path: String) -> Result<RepoDetails, String> {
                 let refname = parts[0].trim();
                 let shortname = parts[1].trim();
                 let is_head = parts[2].trim() == "*";
+
+                if is_head && current_branch.is_empty() {
+                    current_branch = shortname.to_string();
+                }
 
                 if refname.starts_with("refs/heads/") {
                     local_branches.push(BranchItem {
@@ -353,6 +331,17 @@ fn load_repository(repo_path: String) -> Result<RepoDetails, String> {
             }
         }
     }
+
+    if current_branch.is_empty() {
+        current_branch = get_repo_branch(&repo_path);
+    }
+
+    let repo = RepoInfo {
+        id: repo_path.clone(),
+        name,
+        path: repo_path.clone(),
+        branch: current_branch,
+    };
 
     // 2. 初始加载全部分支提交 (--all)
     let commits = fetch_commits_internal(&repo_path, None);
@@ -393,27 +382,192 @@ fn checkout_branch(repo_path: String, branch_name: String) -> Result<String, Str
     run_git_in(&repo_path, &["checkout", &branch_name])
 }
 
-#[tauri::command]
-fn open_folder_dialog() -> Option<String> {
-    let script = r#"try
-POSIX path of (choose folder with prompt "请选择一个 Git 仓库目录")
-end try"#;
+fn scan_git_repos(root: &Path) -> Vec<String> {
+    let mut repos = Vec::new();
+    // 1. 若当前所选目录本身就是一个 Git 仓库，先加入列表
+    if root.join(".git").exists() {
+        repos.push(root.to_string_lossy().to_string());
+    }
 
-    let output = Command::new("osascript")
-        .args(["-e", script])
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path.is_empty() {
-            let p = PathBuf::from(&path);
-            if p.join(".git").exists() {
-                return Some(path);
+    // 2. 无论当前目录自身是否是仓库，都继续扫描直接子目录这一层 (depth = 1)，识别嵌套的子仓库
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if file_name.starts_with('.')
+                    || file_name == "node_modules"
+                    || file_name == "target"
+                    || file_name == "dist"
+                    || file_name == "build"
+                    || file_name == "vendor"
+                    || file_name == "AppData"
+                {
+                    continue;
+                }
+                if path.join(".git").exists() {
+                    let path_str = path.to_string_lossy().to_string();
+                    if !repos.contains(&path_str) {
+                        repos.push(path_str);
+                    }
+                }
             }
         }
     }
-    None
+
+    repos
+}
+
+#[tauri::command]
+async fn open_folder_dialog() -> Result<Vec<String>, String> {
+    let folder = rfd::AsyncFileDialog::new()
+        .set_title("请选择一个包含 Git 仓库的项目或工作区目录")
+        .pick_folder()
+        .await;
+
+    if let Some(folder_handle) = folder {
+        let p = folder_handle.path();
+        let mut found = scan_git_repos(p);
+        if found.is_empty() {
+            let path_str = p.to_string_lossy().to_string();
+            let is_git = run_git_in(&path_str, &["rev-parse", "--is-inside-work-tree"])
+                .map(|s| s == "true")
+                .unwrap_or(false);
+            if is_git {
+                found.push(path_str);
+            }
+        }
+
+        if found.is_empty() {
+            return Err("所选目录及其子目录中未发现任何合法的 Git 仓库（缺少 .git）".into());
+        }
+
+        return Ok(found);
+    }
+
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+fn get_working_status(repo_path: String) -> Result<Vec<StatusFile>, String> {
+    let output = run_git_in(&repo_path, &["status", "--porcelain=v1", "-unormal"])?;
+    let mut files = Vec::new();
+    for line in output.lines() {
+        if line.len() < 3 {
+            continue;
+        }
+        let index_status = &line[0..1];
+        let work_status = &line[1..2];
+        let raw_path = if line.len() >= 4 { &line[3..] } else { "" };
+        let clean_path = clean_git_path(raw_path);
+
+        if index_status == "?" && work_status == "?" {
+            files.push(StatusFile {
+                path: clean_path,
+                status: "?".to_string(),
+                staged: false,
+            });
+        } else {
+            if index_status != " " && index_status != "?" {
+                files.push(StatusFile {
+                    path: clean_path.clone(),
+                    status: index_status.to_string(),
+                    staged: true,
+                });
+            }
+            if work_status != " " && work_status != "?" {
+                files.push(StatusFile {
+                    path: clean_path,
+                    status: work_status.to_string(),
+                    staged: false,
+                });
+            }
+        }
+    }
+    Ok(files)
+}
+
+#[tauri::command]
+fn get_working_diff(repo_path: String, file_path: String, staged: bool) -> Result<String, String> {
+    let clean = clean_git_path(&file_path);
+    if staged {
+        run_git_in(&repo_path, &["diff", "--cached", "--color=never", "--", &clean])
+    } else {
+        let diff = run_git_in(&repo_path, &["diff", "--color=never", "--", &clean])?;
+        if diff.trim().is_empty() {
+            let p = Path::new(&repo_path).join(&clean);
+            if p.exists() && p.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    let line_count = content.lines().count().max(1);
+                    let mut patch = format!("@@ -0,0 +1,{} @@\n", line_count);
+                    for l in content.lines() {
+                        patch.push('+');
+                        patch.push_str(l);
+                        patch.push('\n');
+                    }
+                    return Ok(patch);
+                }
+            }
+        }
+        Ok(diff)
+    }
+}
+
+#[tauri::command]
+fn commit_working_changes(
+    repo_path: String,
+    message: String,
+    files: Vec<String>,
+) -> Result<String, String> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err("提交信息不能为空".into());
+    }
+    if files.is_empty() {
+        run_git_in(&repo_path, &["add", "-A"])?;
+    } else {
+        for f in &files {
+            let clean = clean_git_path(f);
+            run_git_in(&repo_path, &["add", "--", &clean])?;
+        }
+    }
+    run_git_in(&repo_path, &["commit", "-m", trimmed])
+}
+
+#[tauri::command]
+fn push_remote(
+    repo_path: String,
+    remote: Option<String>,
+    branch: Option<String>,
+) -> Result<String, String> {
+    let remote_name = remote.unwrap_or_else(|| "origin".to_string());
+    if let Some(b) = branch {
+        run_git_in(&repo_path, &["push", &remote_name, &b])
+    } else {
+        run_git_in(&repo_path, &["push"])
+    }
+}
+
+#[tauri::command]
+fn merge_branch(
+    repo_path: String,
+    source_branch: String,
+    is_squash: bool,
+    commit_msg: Option<String>,
+) -> Result<String, String> {
+    if is_squash {
+        let output = run_git_in(&repo_path, &["merge", "--squash", &source_branch])?;
+        let msg = commit_msg
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| format!("Squash merge branch '{}'", source_branch));
+        let commit_res = run_git_in(&repo_path, &["commit", "-m", &msg])?;
+        Ok(format!("{}\n{}", output, commit_res))
+    } else {
+        let msg = commit_msg
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| format!("Merge branch '{}'", source_branch));
+        run_git_in(&repo_path, &["merge", "--no-ff", &source_branch, "-m", &msg])
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -426,7 +580,12 @@ pub fn run() {
             get_commit_diff,
             get_file_diff,
             checkout_branch,
-            open_folder_dialog
+            open_folder_dialog,
+            get_working_status,
+            get_working_diff,
+            commit_working_changes,
+            push_remote,
+            merge_branch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -437,24 +596,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_file_diff() {
-        let path = "/Users/sifan1/Documents/project/git-playground".to_string();
-        let diff = get_file_diff(
-            path,
-            "8846577".to_string(),
-            "src/payment/wechat.service.ts".to_string(),
-        );
-        assert!(diff.is_ok());
-        let content = diff.unwrap();
-        assert!(content.contains("WechatPayService"));
+    fn test_scan_current_repo() {
+        let root = Path::new("..");
+        let repos = scan_git_repos(root);
+        assert!(!repos.is_empty(), "Should find at least one repo");
+        println!("Found repos: {:?}", repos);
     }
 
     #[test]
-    fn test_get_branch_commits() {
-        let path = "/Users/sifan1/Documents/project/git-playground".to_string();
-        let all_commits = fetch_commits_internal(&path, None);
-        let dev_commits = fetch_commits_internal(&path, Some("dev"));
-        assert!(all_commits.len() >= dev_commits.len());
-        println!("All: {}, Dev: {}", all_commits.len(), dev_commits.len());
+    fn test_get_working_status() {
+        let status = get_working_status("..".to_string());
+        assert!(status.is_ok());
+        println!("Working files count: {}", status.unwrap().len());
     }
 }

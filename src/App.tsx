@@ -7,7 +7,7 @@ import {
   Sun,
   Moon,
   ChevronDown,
-    GitBranch,
+  GitBranch,
   Globe,
   Copy,
   Check,
@@ -15,9 +15,16 @@ import {
   X,
   ChevronUp,
   Tag,
+  GitCommit,
+  GitMerge,
+  UploadCloud,
+  CheckSquare,
+  Square,
 } from "lucide-react";
 import { FileTreeView } from "./components/FileTreeView";
 import { GitGraphOverlay, computeGitGraph } from "./components/GitGraphView";
+import { DiffViewer } from "./components/DiffViewer";
+import { FileIcon } from "./components/FileIcon";
 import "./App.css";
 
 interface RepoInfo {
@@ -44,7 +51,6 @@ interface CommitItem {
   sha: string;
   full_sha: string;
   msg: string;
-  prefix: string;
   author: string;
   author_email: string;
   date: string;
@@ -67,13 +73,27 @@ interface RepoDetails {
   commits: CommitItem[];
 }
 
-function getPrefixClass(prefix: string) {
-  const p = prefix.toLowerCase();
-  if (p.startsWith("fix")) return "flag-fix";
-  if (p.startsWith("feat")) return "flag-feat";
-  if (p.startsWith("merge")) return "flag-merge";
-  if (p.startsWith("chore")) return "flag-chore";
-  return "";
+interface StatusFile {
+  path: string;
+  status: string;
+  staged: boolean;
+}
+
+interface ContextMenuState {
+  visible: boolean;
+  x: number;
+  y: number;
+  branchName: string;
+  isHead: boolean;
+  isRemote: boolean;
+}
+
+interface MergeModalState {
+  visible: boolean;
+  sourceBranch: string;
+  targetBranch: string;
+  isSquash: boolean;
+  commitMsg: string;
 }
 
 export default function App() {
@@ -101,6 +121,23 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // 工作区变更状态
+  const [workingChangesOpen, setWorkingChangesOpen] = useState(true);
+  const [workingFiles, setWorkingFiles] = useState<StatusFile[]>([]);
+  const [selectedWorkingFiles, setSelectedWorkingFiles] = useState<string[]>([]);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [isCommitting, setIsCommitting] = useState(false);
+  const [isPushing, setIsPushing] = useState(false);
+  const [activeWorkingDiff, setActiveWorkingDiff] = useState<{
+    path: string;
+    diffText: string;
+  } | null>(null);
+  const [isWorkingDiffMaximized, setIsWorkingDiffMaximized] = useState(false);
+
+  // 分支右键上下文菜单与合并弹窗
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [mergeModal, setMergeModal] = useState<MergeModalState | null>(null);
+
   // 分支过滤状态：null 表示展示全部分支大图，字符串表示仅看该分支
   const [filterBranch, setFilterBranch] = useState<string | null>(null);
 
@@ -109,6 +146,32 @@ export default function App() {
   const [remoteBranchesOpen, setRemoteBranchesOpen] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState(true);
   const [collapsedBranchFolders, setCollapsedBranchFolders] = useState<Record<string, boolean>>({});
+
+  // 多仓库内存数据缓存 (消除多标签切换卡顿)
+  const [repoCache, setRepoCache] = useState<Record<string, RepoDetails>>({});
+  const [workingCache, setWorkingCache] = useState<Record<string, StatusFile[]>>({});
+
+  const refreshWorkingStatus = useCallback(async (path?: string) => {
+    const targetPath = path || activeRepoPath;
+    if (!targetPath) {
+      setWorkingFiles([]);
+      setSelectedWorkingFiles([]);
+      return;
+    }
+    try {
+      const files = await invoke<StatusFile[]>("get_working_status", { repoPath: targetPath });
+      setWorkingCache((prev) => ({ ...prev, [targetPath]: files }));
+      // 快速切换仓库时，旧仓库的后台请求不能覆盖当前仓库的工作区面板
+      const currentPath = localStorage.getItem("git_client_active_repo_path") || activeRepoPath;
+      if (currentPath === targetPath) {
+        setWorkingFiles(files);
+        setSelectedWorkingFiles(files.map((f) => f.path));
+      }
+    } catch {
+      setWorkingFiles([]);
+      setSelectedWorkingFiles([]);
+    }
+  }, [activeRepoPath]);
 
   const applyBranchFilter = async (branchName: string | null) => {
     if (!activeRepoPath) return;
@@ -128,26 +191,36 @@ export default function App() {
   };
 
   const handleBranchClick = (branchName: string) => {
+    // 若当前已显示该分支历史，再次点击保持显示，只能通过点击右侧的叉号按钮关闭
     if (filterBranch === branchName) {
-      applyBranchFilter(null);
-    } else {
-      applyBranchFilter(branchName);
+      return;
     }
-  };
-
-  const handleBranchDoubleClick = (branchName: string) => {
-    handleCheckoutBranch(branchName);
+    applyBranchFilter(branchName);
   };
 
   useEffect(() => {
+    const handleGlobalClick = () => {
+      if (contextMenu) setContextMenu(null);
+    };
+    window.addEventListener("click", handleGlobalClick);
+    return () => window.removeEventListener("click", handleGlobalClick);
+  }, [contextMenu]);
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && filterBranch) {
-        applyBranchFilter(null);
+      if (e.key === "Escape") {
+        if (contextMenu) setContextMenu(null);
+        if (mergeModal) setMergeModal(null);
+        if (activeWorkingDiff) {
+          setActiveWorkingDiff(null);
+          setIsWorkingDiffMaximized(false);
+        }
+        if (filterBranch) applyBranchFilter(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [filterBranch, activeRepoPath]);
+  }, [contextMenu, mergeModal, activeWorkingDiff, filterBranch, activeRepoPath]);
 
   const toggleBranchFolder = (folderName: string) => {
     setCollapsedBranchFolders((prev) => ({
@@ -156,10 +229,14 @@ export default function App() {
     }));
   };
 
-  // 面板拖拽拉伸
+  // 面板拖拽拉伸与停靠位置
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem("git_client_sidebar_width");
     return saved ? Math.max(170, Math.min(480, parseInt(saved, 10))) : 230;
+  });
+
+  const [dockPosition, setDockPosition] = useState<"bottom" | "right">(() => {
+    return (localStorage.getItem("git_client_details_dock") as "bottom" | "right") || "bottom";
   });
 
   const [detailsHeight, setDetailsHeight] = useState(() => {
@@ -167,8 +244,21 @@ export default function App() {
     return saved ? Math.max(130, Math.min(600, parseInt(saved, 10))) : 240;
   });
 
+  const [detailsWidth, setDetailsWidth] = useState(() => {
+    const saved = localStorage.getItem("git_client_details_width");
+    return saved ? Math.max(260, Math.min(650, parseInt(saved, 10))) : 380;
+  });
+
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [isResizingDetails, setIsResizingDetails] = useState(false);
+
+  const toggleDockPosition = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const next = dockPosition === "bottom" ? "right" : "bottom";
+    setDockPosition(next);
+    localStorage.setItem("git_client_details_dock", next);
+    setDetailsCollapsed(false);
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -182,14 +272,35 @@ export default function App() {
     localStorage.setItem("git_client_manual_repos", JSON.stringify(newRepos));
   };
 
-  const loadRepo = useCallback(async (path: string) => {
+  const loadRepo = useCallback(async (
+    path: string,
+    showLoadingIndicator = true,
+    activate = true,
+  ) => {
     if (!path) return;
-    setLoading(true);
-    try {
-      const details = await invoke<RepoDetails>("load_repository", { repoPath: path });
-      setRepoDetails(details);
+
+    if (activate) {
       setActiveRepoPath(path);
       localStorage.setItem("git_client_active_repo_path", path);
+      setSelectedSha("");
+      setFilterBranch(null);
+      setDetailsCollapsed(true);
+    }
+
+    if (showLoadingIndicator) {
+      setLoading(true);
+    }
+    try {
+      const details = await invoke<RepoDetails>("load_repository", { repoPath: path });
+
+      // 更新内存多仓库缓存
+      setRepoCache((prev) => ({ ...prev, [path]: details }));
+
+      // 仅当请求对应的仓库仍处于激活状态时更新当前视图，避免异步响应串仓
+      const currentActive = localStorage.getItem("git_client_active_repo_path");
+      if (currentActive === path) {
+        setRepoDetails(details);
+      }
 
       setRepos((prev) => {
         const updated = prev.map((r) =>
@@ -198,9 +309,6 @@ export default function App() {
         localStorage.setItem("git_client_manual_repos", JSON.stringify(updated));
         return updated;
       });
-
-      setSelectedSha("");
-      setDetailsCollapsed(true);
 
       if (details.commits && details.commits.length > 0) {
         const cacheUpdate: Record<string, ChangedFile[]> = {};
@@ -211,12 +319,46 @@ export default function App() {
         }
         setFilesCache((prev) => ({ ...prev, ...cacheUpdate }));
       }
+
+      await refreshWorkingStatus(path);
     } catch (err) {
-      showToast(String(err));
+      if (showLoadingIndicator) {
+        showToast(String(err));
+      }
     } finally {
-      setLoading(false);
+      if (showLoadingIndicator) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [refreshWorkingStatus]);
+
+  // 0 毫秒秒切仓库标签页：乐观高亮 + 内存缓存直出 + 后台静默校验
+  const switchRepo = useCallback((path: string) => {
+    if (!path || path === activeRepoPath) return;
+
+    // 1. 同步瞬间激活目标标签页高亮
+    setActiveRepoPath(path);
+    localStorage.setItem("git_client_active_repo_path", path);
+    setSelectedSha("");
+    setFilterBranch(null);
+    setDetailsCollapsed(true);
+
+    // 2. 内存命中：0ms 瞬间展示缓存的分支与提交历史，无卡顿
+    const cachedDetails = repoCache[path];
+    if (cachedDetails) {
+      setRepoDetails(cachedDetails);
+      const cachedWorking = workingCache[path];
+      if (cachedWorking) {
+        setWorkingFiles(cachedWorking);
+        setSelectedWorkingFiles(cachedWorking.map((f) => f.path));
+      }
+      // 后台静默校验
+      loadRepo(path, false);
+    } else {
+      // 首次加载未缓存：展示加载指示器
+      loadRepo(path, true);
+    }
+  }, [activeRepoPath, repoCache, workingCache, loadRepo]);
 
   useEffect(() => {
     if (repos.length > 0) {
@@ -241,25 +383,34 @@ export default function App() {
 
   const handleOpenFolder = async () => {
     try {
-      const selectedPath = await invoke<string | null>("open_folder_dialog");
-      if (selectedPath) {
-        const existing = repos.find((r) => r.path === selectedPath);
-        if (existing) {
-          loadRepo(selectedPath);
-          showToast(`已切换至: ${existing.name}`);
-        } else {
-          const parts = selectedPath.split("/").filter(Boolean);
+      const paths = await invoke<string[]>("open_folder_dialog");
+      if (paths && paths.length > 0) {
+        let addedCount = 0;
+        let nextRepos = [...repos];
+        for (const p of paths) {
+          const exists = nextRepos.some((r) => r.path === p);
+          if (!exists) {
+            const parts = p.split(/[/\\]/).filter(Boolean);
+            const name = parts[parts.length - 1] || "repository";
+            nextRepos.push({
+              id: p,
+              name,
+              path: p,
+              branch: "HEAD",
+            });
+            addedCount++;
+          }
+        }
+        if (addedCount > 0) {
+          saveRepos(nextRepos);
+        }
+        loadRepo(paths[0]);
+        if (paths.length === 1) {
+          const parts = paths[0].split(/[/\\]/).filter(Boolean);
           const name = parts[parts.length - 1] || "repository";
-          const newRepo: RepoInfo = {
-            id: selectedPath,
-            name,
-            path: selectedPath,
-            branch: "HEAD",
-          };
-          const newRepos = [...repos, newRepo];
-          saveRepos(newRepos);
-          loadRepo(selectedPath);
-          showToast(`已添加仓库: ${name}`);
+          showToast(addedCount > 0 ? `已添加仓库: ${name}` : `已切换至: ${name}`);
+        } else {
+          showToast(`已识别并添加 ${paths.length} 个 Git 仓库`);
         }
       }
     } catch (err) {
@@ -284,15 +435,113 @@ export default function App() {
 
   const handleCheckoutBranch = async (branchName: string) => {
     if (!activeRepoPath) return;
+
+    // 1. 立即前端乐观更新 UI 上的 HEAD 指向，避免等待网络/磁盘 I/O
+    setRepoDetails((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        repo: { ...prev.repo, branch: branchName },
+        local_branches: prev.local_branches.map((b) => ({
+          ...b,
+          is_head: b.name === branchName,
+        })),
+      };
+    });
+
     try {
       await invoke("checkout_branch", {
         repoPath: activeRepoPath,
         branchName,
       });
       showToast(`已检出分支: ${branchName}`);
+      // 2. 异步重新轻量同步最新状态与工作区
       loadRepo(activeRepoPath);
     } catch (err) {
       showToast(`切换失败: ${String(err)}`);
+      // 失败时回退刷新
+      loadRepo(activeRepoPath);
+    }
+  };
+
+  const handleExecuteMerge = async () => {
+    if (!mergeModal || !activeRepoPath) return;
+    try {
+      setLoading(true);
+      await invoke<string>("merge_branch", {
+        repoPath: activeRepoPath,
+        sourceBranch: mergeModal.sourceBranch,
+        isSquash: mergeModal.isSquash,
+        commitMsg: mergeModal.commitMsg.trim() || null,
+      });
+      showToast(
+        `${mergeModal.isSquash ? "Squash 合并" : "合并"}成功: ${mergeModal.sourceBranch} -> ${mergeModal.targetBranch}`
+      );
+      setMergeModal(null);
+      loadRepo(activeRepoPath);
+    } catch (err) {
+      showToast(`合并失败: ${String(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCommitWorkingChanges = async () => {
+    if (!activeRepoPath) return;
+    if (!commitMessage.trim()) {
+      showToast("请输入提交说明");
+      return;
+    }
+    setIsCommitting(true);
+    try {
+      await invoke<string>("commit_working_changes", {
+        repoPath: activeRepoPath,
+        message: commitMessage,
+        files: selectedWorkingFiles,
+      });
+      showToast("提交成功");
+      setCommitMessage("");
+      loadRepo(activeRepoPath);
+      refreshWorkingStatus(activeRepoPath);
+    } catch (err) {
+      showToast(`提交失败: ${String(err)}`);
+    } finally {
+      setIsCommitting(false);
+    }
+  };
+
+  const handlePushRemote = async () => {
+    if (!activeRepoPath) return;
+    setIsPushing(true);
+    try {
+      await invoke<string>("push_remote", {
+        repoPath: activeRepoPath,
+        remote: null,
+        branch: null,
+      });
+      showToast("推送到远程成功");
+      loadRepo(activeRepoPath);
+    } catch (err) {
+      showToast(`推送失败: ${String(err)}`);
+    } finally {
+      setIsPushing(false);
+    }
+  };
+
+  const handleViewWorkingDiff = async (file: StatusFile) => {
+    if (!activeRepoPath) return;
+    try {
+      const diff = await invoke<string>("get_working_diff", {
+        repoPath: activeRepoPath,
+        filePath: file.path,
+        staged: file.staged,
+      });
+      setActiveWorkingDiff({
+        path: file.path,
+        diffText: diff,
+      });
+    } catch (err) {
+      showToast(`获取文件差异失败: ${String(err)}`);
     }
   };
 
@@ -337,10 +586,17 @@ export default function App() {
         localStorage.setItem("git_client_sidebar_width", String(newWidth));
       }
       if (isResizingDetails) {
-        const winHeight = window.innerHeight;
-        const newHeight = Math.max(120, Math.min(winHeight - 180, winHeight - e.clientY));
-        setDetailsHeight(newHeight);
-        localStorage.setItem("git_client_details_height", String(newHeight));
+        if (dockPosition === "bottom") {
+          const winHeight = window.innerHeight;
+          const newHeight = Math.max(120, Math.min(winHeight - 180, winHeight - e.clientY));
+          setDetailsHeight(newHeight);
+          localStorage.setItem("git_client_details_height", String(newHeight));
+        } else {
+          const winWidth = window.innerWidth;
+          const newWidth = Math.max(260, Math.min(Math.min(650, winWidth - 320), winWidth - e.clientX));
+          setDetailsWidth(newWidth);
+          localStorage.setItem("git_client_details_width", String(newWidth));
+        }
       }
     };
 
@@ -353,7 +609,11 @@ export default function App() {
       window.addEventListener("mousemove", handleMouseMove);
       window.addEventListener("mouseup", handleMouseUp);
       document.body.style.userSelect = "none";
-      document.body.style.cursor = isResizingSidebar ? "col-resize" : "row-resize";
+      document.body.style.cursor = isResizingSidebar
+        ? "col-resize"
+        : dockPosition === "bottom"
+        ? "row-resize"
+        : "col-resize";
     }
 
     return () => {
@@ -362,7 +622,7 @@ export default function App() {
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
     };
-  }, [isResizingSidebar, isResizingDetails]);
+  }, [isResizingSidebar, isResizingDetails, dockPosition]);
 
   // 左侧分支按 / 层级自动归纳 (类似 IDEA 分支树)
   const groupedLocalBranches = useMemo(() => {
@@ -435,7 +695,7 @@ export default function App() {
               <button
                 key={r.path}
                 className={`repo-tab ${isActive ? "active" : ""}`}
-                onClick={() => loadRepo(r.path)}
+                onClick={() => switchRepo(r.path)}
                 title={r.path}
               >
                 {isActive ? (
@@ -460,7 +720,7 @@ export default function App() {
           <button
             className="icon-action-btn"
             onClick={handleOpenFolder}
-            title="打开本地 Git 仓库文件夹"
+            title="打开本地 Git 仓库或工作区文件夹"
           >
             <FolderPlus size={14} />
           </button>
@@ -468,8 +728,22 @@ export default function App() {
           {activeRepoPath && (
             <button
               className="icon-action-btn"
-              onClick={() => loadRepo(activeRepoPath)}
-              title="刷新当前仓库"
+              onClick={handlePushRemote}
+              disabled={isPushing}
+              title="推送到远程仓库 (git push)"
+            >
+              <UploadCloud size={14} className={isPushing ? "spin-icon" : ""} />
+            </button>
+          )}
+
+          {activeRepoPath && (
+            <button
+              className="icon-action-btn"
+              onClick={() => {
+                loadRepo(activeRepoPath);
+                refreshWorkingStatus(activeRepoPath);
+              }}
+              title="刷新当前仓库与工作区状态"
             >
               <RefreshCw size={13} className={loading ? "spin-icon" : ""} />
             </button>
@@ -492,9 +766,6 @@ export default function App() {
             <FolderGit2 size={28} />
           </div>
           <h2 className="welcome-title">点墨 Inker</h2>
-          <p className="welcome-subtitle">
-            纯净、克制的 Git 桌面工作台。选择本地包含 .git 的项目文件夹即可开启管理
-          </p>
           <button className="welcome-action-btn" onClick={handleOpenFolder}>
             <FolderPlus size={16} />
             <span>选择本地仓库文件夹</span>
@@ -502,7 +773,7 @@ export default function App() {
         </div>
       ) : (
         <div className="workspace-body">
-          {/* 2. 左侧分支侧边栏 (IDEA 风格：路径文件夹折叠 + 底部吸附远程分支) */}
+          {/* 2. 左侧统一侧边栏：工作区变更(置顶) + 本地分支 + 远程分支 纯手风琴体系 */}
           <aside
             className="branches-sidebar"
             style={{ width: `${sidebarWidth}px` }}
@@ -513,156 +784,358 @@ export default function App() {
             />
 
             <div className="sidebar-scroll-zone">
-            {/* 本地分支手风琴 */}
-            <div className="accordion-section local-section">
-              <div
-                className="accordion-header-btn"
-                onClick={() => setLocalBranchesOpen((v) => !v)}
-                style={{ cursor: "pointer" }}
-              >
-                <span>本地分支</span>
-                <ChevronDown size={12} className={`accordion-chevron-icon ${localBranchesOpen ? "open" : ""}`} />
-              </div>
+              {/* 手风琴 1：工作区变更 */}
+              <div className="accordion-section working-section">
+                <div
+                  className="accordion-header-btn"
+                  onClick={() => setWorkingChangesOpen((v) => !v)}
+                >
+                  <div className="accordion-header-left">
+                    <ChevronDown
+                      size={12}
+                      className={`accordion-chevron-icon ${workingChangesOpen ? "open" : ""}`}
+                    />
+                    <GitCommit size={13} className="accordion-section-icon" />
+                    <span className="accordion-title">工作区变更</span>
+                  </div>
+                  <div className="accordion-header-right">
+                    <span className={`accordion-count-badge ${workingFiles.length > 0 ? "has-changes" : ""}`}>
+                      {workingFiles.length}
+                    </span>
+                  </div>
+                </div>
 
-              <div className={`accordion-collapse-wrapper ${localBranchesOpen ? "expanded" : "collapsed"}`}>
-                <div className="accordion-collapse-inner">
-                  <div className="accordion-body">
-                  {/* 顶层无斜杠分支 (例如 dev, main) */}
-                  {groupedLocalBranches.root.map((b) => {
-                    const isSelected = filterBranch === b.name;
-                    return (
-                      <div
-                        key={b.name}
-                        className={`tree-node-item ${isSelected ? "selected-filter" : ""}`}
-                        onClick={() => handleBranchClick(b.name)}
-                        onDoubleClick={() => handleBranchDoubleClick(b.name)}
-                        title={`单击聚焦查看 ${b.name}，双击检出切换`}
-                      >
-                        <GitBranch size={13} />
-                        <span className="branch-name-text">{b.name}</span>
-                        {b.is_head && <span className="head-tag-badge">HEAD</span>}
-                        {isSelected && (
+                <div className={`accordion-collapse-wrapper ${workingChangesOpen ? "expanded" : "collapsed"}`}>
+                  <div className="accordion-collapse-inner">
+                    <div className="sidebar-changes-zone">
+                      <div className="changes-zone-header">
+                        <div className="changes-zone-title">
+                          <span>待提交清单</span>
+                          <span className="changes-count-pill">{workingFiles.length}</span>
+                        </div>
+                        <div className="changes-header-actions">
                           <button
-                            className="branch-clear-x"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              applyBranchFilter(null);
+                            type="button"
+                            className="changes-action-mini-btn"
+                            onClick={() => {
+                              if (selectedWorkingFiles.length === workingFiles.length) {
+                                setSelectedWorkingFiles([]);
+                              } else {
+                                setSelectedWorkingFiles(workingFiles.map((f) => f.path));
+                              }
                             }}
-                            title="取消查看此分支，恢复全部"
+                            title={selectedWorkingFiles.length === workingFiles.length ? "取消全选" : "全部选中"}
                           >
-                            <X size={11} />
+                            {selectedWorkingFiles.length === workingFiles.length && workingFiles.length > 0 ? (
+                              <CheckSquare size={13} />
+                            ) : (
+                              <Square size={13} />
+                            )}
                           </button>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {/* 路径目录分组 (例如 📁 feature, 📁 bugfix, 📁 hotfix) */}
-                  {groupedLocalBranches.groups.map((g) => {
-                    const isFolderCollapsed = collapsedBranchFolders[g.folder];
-                    return (
-                      <div key={g.folder} className="branch-folder-box">
-                        <button
-                          className="branch-folder-header"
-                          onClick={() => toggleBranchFolder(g.folder)}
-                        >
-                          <ChevronDown size={11} className={`folder-chevron-icon ${!isFolderCollapsed ? "open" : ""}`} style={{ color: "var(--ink-tertiary)" }} />
-                          <Folder size={13} style={{ color: "var(--ink-secondary)" }} />
-                          <span>{g.folder}</span>
-                        </button>
-
-                        <div className={`folder-collapse-wrapper ${!isFolderCollapsed ? "expanded" : "collapsed"}`}>
-                          <div className="folder-collapse-inner">
-                            <div className="branch-folder-items">
-                            {g.items.map(({ branch, shortName }) => {
-                              const isSelected = filterBranch === branch.name;
-                              return (
-                                <div
-                                  key={branch.name}
-                                  className={`tree-node-item ${isSelected ? "selected-filter" : ""}`}
-                                  onClick={() => handleBranchClick(branch.name)}
-                                  onDoubleClick={() => handleBranchDoubleClick(branch.name)}
-                                  title={`单击聚焦查看 ${branch.name}，双击检出切换`}
-                                >
-                                  <GitBranch size={13} />
-                                  <span className="branch-name-text">{shortName}</span>
-                                  {branch.is_head && <span className="head-tag-badge">HEAD</span>}
-                                  {isSelected && (
-                                    <button
-                                      className="branch-clear-x"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        applyBranchFilter(null);
-                                      }}
-                                      title="取消查看此分支，恢复全部"
-                                    >
-                                      <X size={11} />
-                                    </button>
-                                  )}
-                                </div>
-                              );
-                            })}
-                            </div>
-                          </div>
+                          <button
+                            type="button"
+                            className="changes-action-mini-btn"
+                            onClick={() => refreshWorkingStatus()}
+                            title="刷新工作区状态"
+                          >
+                            <RefreshCw size={12} />
+                          </button>
                         </div>
                       </div>
-                    );
-                  })}
 
-                  {(!repoDetails || repoDetails.local_branches.length === 0) && (
-                    <div style={{ padding: "6px 8px", fontSize: "12px", color: "var(--ink-tertiary)" }}>
-                      无本地分支
+                      <div className="changes-file-list">
+                        {workingFiles.length === 0 ? (
+                          <div className="changes-empty-hint">
+                            <Check size={16} color="var(--diff-add-text)" />
+                            <span>工作区干净，无未提交文件</span>
+                          </div>
+                        ) : (
+                          workingFiles.map((file) => {
+                            const isChecked = selectedWorkingFiles.includes(file.path);
+                            const fileName = file.path.split(/[/\\]/).pop() || file.path;
+                            return (
+                              <div
+                                key={file.path}
+                                className="changes-file-row"
+                                onClick={() => handleViewWorkingDiff(file)}
+                                title={`点击比对差异: ${file.path}`}
+                              >
+                                <span
+                                  className="changes-checkbox"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedWorkingFiles((prev) =>
+                                      isChecked
+                                        ? prev.filter((p) => p !== file.path)
+                                        : [...prev, file.path]
+                                    );
+                                  }}
+                                >
+                                  {isChecked ? (
+                                    <CheckSquare size={13} color="var(--ink)" />
+                                  ) : (
+                                    <Square size={13} color="var(--ink-tertiary)" />
+                                  )}
+                                </span>
+                                <FileIcon filename={fileName} size={14} />
+                                <span className="changes-file-name" title={file.path}>
+                                  {fileName}
+                                </span>
+                                <span className={`changes-status-badge status-${file.status.toLowerCase()}`}>
+                                  {file.status}
+                                </span>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      <div className="changes-commit-panel">
+                        <textarea
+                          className="changes-commit-input"
+                          rows={2}
+                          placeholder="填写本次提交说明 (Ctrl+Enter 快捷提交)..."
+                          value={commitMessage}
+                          onChange={(e) => setCommitMessage(e.target.value)}
+                          onKeyDown={(e) => {
+                            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                              e.preventDefault();
+                              handleCommitWorkingChanges();
+                            }
+                          }}
+                        />
+                        <div className="changes-commit-actions">
+                          <button
+                            type="button"
+                            className="changes-commit-btn primary"
+                            disabled={isCommitting || workingFiles.length === 0}
+                            onClick={handleCommitWorkingChanges}
+                          >
+                            <GitCommit size={13} />
+                            <span>{isCommitting ? "提交中..." : `提交 (${selectedWorkingFiles.length})`}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="changes-commit-btn secondary"
+                            disabled={isPushing}
+                            onClick={handlePushRemote}
+                            title="推送到远程 (git push)"
+                          >
+                            <UploadCloud size={13} className={isPushing ? "spin-icon" : ""} />
+                            <span>{isPushing ? "推送中..." : "推送"}</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-            {/* 远程分支手风琴 (未展开时置底吸附，展开时紧随本地分支身后排列) */}
-            <div
-              className={`accordion-section remote-section ${
-                remoteBranchesOpen ? "expanded-flow" : "collapsed-bottom"
-              }`}
-            >
-              <button
-                className="accordion-header-btn"
-                onClick={() => setRemoteBranchesOpen((v) => !v)}
-              >
-                <span>远程分支</span>
-                <ChevronDown size={12} className={`accordion-chevron-icon ${remoteBranchesOpen ? "open" : ""}`} />
-              </button>
-
-              <div className={`accordion-collapse-wrapper ${remoteBranchesOpen ? "expanded" : "collapsed"}`}>
-                <div className="accordion-collapse-inner">
-                  <div className="accordion-body">
-                  <div className="origin-head-row">
-                    <Globe size={12} />
-                    <span>origin</span>
-                  </div>
-
-                  <div className="origin-tree-guide">
-                    {repoDetails?.remote_branches.map((b) => (
-                      <div key={b.name} className="tree-node-item" title={b.name}>
-                        <GitBranch size={13} />
-                        <span className="branch-name-text">{b.name}</span>
-                      </div>
-                    ))}
-                    {(!repoDetails || repoDetails.remote_branches.length === 0) && (
-                      <div style={{ padding: "4px 8px", fontSize: "12px", color: "var(--ink-tertiary)" }}>
-                        无远程分支
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
+
+              {/* 手风琴 2：本地分支 */}
+              <div className="accordion-section local-section">
+                <div
+                  className="accordion-header-btn"
+                  onClick={() => setLocalBranchesOpen((v) => !v)}
+                >
+                  <div className="accordion-header-left">
+                    <ChevronDown
+                      size={12}
+                      className={`accordion-chevron-icon ${localBranchesOpen ? "open" : ""}`}
+                    />
+                    <GitBranch size={13} className="accordion-section-icon" />
+                    <span className="accordion-title">本地分支</span>
+                  </div>
+                  <div className="accordion-header-right">
+                    <span className="accordion-count-badge">
+                      {repoDetails?.local_branches.length || 0}
+                    </span>
+                  </div>
+                </div>
+
+                <div className={`accordion-collapse-wrapper ${localBranchesOpen ? "expanded" : "collapsed"}`}>
+                  <div className="accordion-collapse-inner">
+                    <div className="accordion-body">
+                      {/* 顶层无斜杠分支 (例如 dev, main) */}
+                      {groupedLocalBranches.root.map((b) => {
+                        const isSelected = filterBranch === b.name;
+                        return (
+                          <div
+                            key={b.name}
+                            className={`tree-node-item ${isSelected ? "selected-filter" : ""}`}
+                            onClick={() => handleBranchClick(b.name)}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setContextMenu({
+                                visible: true,
+                                x: e.clientX,
+                                y: e.clientY,
+                                branchName: b.name,
+                                isHead: b.is_head,
+                                isRemote: false,
+                              });
+                            }}
+                            title={`单击聚焦查看 ${b.name}，右键检出或合并`}
+                          >
+                            <GitBranch size={13} />
+                            <span className="branch-name-text">{b.name}</span>
+                            {b.is_head && <span className="head-tag-badge">HEAD</span>}
+                            {isSelected && (
+                              <button
+                                className="branch-clear-x"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  applyBranchFilter(null);
+                                }}
+                                title="关闭当前分支显示，恢复全部分支"
+                              >
+                                <X size={11} />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {/* 路径目录分组 (例如 📁 feature, 📁 bugfix, 📁 hotfix) */}
+                      {groupedLocalBranches.groups.map((g) => {
+                        const isFolderCollapsed = collapsedBranchFolders[g.folder];
+                        return (
+                          <div key={g.folder} className="branch-folder-box">
+                            <button
+                              className="branch-folder-header"
+                              onClick={() => toggleBranchFolder(g.folder)}
+                            >
+                              <ChevronDown size={11} className={`folder-chevron-icon ${!isFolderCollapsed ? "open" : ""}`} style={{ color: "var(--ink-tertiary)" }} />
+                              <Folder size={13} style={{ color: "var(--ink-secondary)" }} />
+                              <span>{g.folder}</span>
+                            </button>
+
+                            <div className={`folder-collapse-wrapper ${!isFolderCollapsed ? "expanded" : "collapsed"}`}>
+                              <div className="folder-collapse-inner">
+                                <div className="branch-folder-items">
+                                  {g.items.map(({ branch, shortName }) => {
+                                    const isSelected = filterBranch === branch.name;
+                                    return (
+                                      <div
+                                        key={branch.name}
+                                        className={`tree-node-item ${isSelected ? "selected-filter" : ""}`}
+                                        onClick={() => handleBranchClick(branch.name)}
+                                        onContextMenu={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          setContextMenu({
+                                            visible: true,
+                                            x: e.clientX,
+                                            y: e.clientY,
+                                            branchName: branch.name,
+                                            isHead: branch.is_head,
+                                            isRemote: false,
+                                          });
+                                        }}
+                                        title={`单击聚焦查看 ${branch.name}，右键检出或合并`}
+                                      >
+                                        <GitBranch size={13} />
+                                        <span className="branch-name-text">{shortName}</span>
+                                        {branch.is_head && <span className="head-tag-badge">HEAD</span>}
+                                        {isSelected && (
+                                          <button
+                                            className="branch-clear-x"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              applyBranchFilter(null);
+                                            }}
+                                            title="关闭当前分支显示，恢复全部分支"
+                                          >
+                                            <X size={11} />
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {(!repoDetails || repoDetails.local_branches.length === 0) && (
+                        <div style={{ padding: "6px 8px", fontSize: "12px", color: "var(--ink-tertiary)" }}>
+                          无本地分支
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 手风琴 3：远程分支 */}
+              <div className="accordion-section remote-section">
+                <div
+                  className="accordion-header-btn"
+                  onClick={() => setRemoteBranchesOpen((v) => !v)}
+                >
+                  <div className="accordion-header-left">
+                    <ChevronDown
+                      size={12}
+                      className={`accordion-chevron-icon ${remoteBranchesOpen ? "open" : ""}`}
+                    />
+                    <Globe size={13} className="accordion-section-icon" />
+                    <span className="accordion-title">远程分支</span>
+                  </div>
+                  <div className="accordion-header-right">
+                    <span className="accordion-count-badge">
+                      {repoDetails?.remote_branches.length || 0}
+                    </span>
+                  </div>
+                </div>
+
+                <div className={`accordion-collapse-wrapper ${remoteBranchesOpen ? "expanded" : "collapsed"}`}>
+                  <div className="accordion-collapse-inner">
+                    <div className="accordion-body">
+                      <div className="origin-head-row">
+                        <Globe size={12} />
+                        <span>origin</span>
+                      </div>
+
+                      <div className="origin-tree-guide">
+                        {repoDetails?.remote_branches.map((b) => (
+                          <div
+                            key={b.name}
+                            className="tree-node-item"
+                            title={`远程分支 ${b.name}，右键更多操作`}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setContextMenu({
+                                visible: true,
+                                x: e.clientX,
+                                y: e.clientY,
+                                branchName: `origin/${b.name}`,
+                                isHead: false,
+                                isRemote: true,
+                              });
+                            }}
+                          >
+                            <GitBranch size={13} />
+                            <span className="branch-name-text">{b.name}</span>
+                          </div>
+                        ))}
+                        {(!repoDetails || repoDetails.remote_branches.length === 0) && (
+                          <div style={{ padding: "4px 8px", fontSize: "12px", color: "var(--ink-tertiary)" }}>
+                            无远程分支
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </aside>
 
-          {/* 右侧内容工作区 */}
-          <main className="content-workspace">
+          {/* 右侧内容工作区 (支持底部停靠与右侧停靠) */}
+          <main className={`content-workspace dock-${dockPosition}`}>
             {/* Git Log 拓扑图与提交列表 (全量分支 --all 呈现) */}
             <section className="git-log-view">
               <div className="table-scroll-view">
@@ -691,11 +1164,6 @@ export default function App() {
                           />
 
                           <div className="col-m-title">
-                            {c.prefix && (
-                              <span className={`prefix-flag ${getPrefixClass(c.prefix)}`}>
-                                {c.prefix}
-                              </span>
-                            )}
                             <span>{c.msg}</span>
                           </div>
 
@@ -742,14 +1210,18 @@ export default function App() {
               </div>
             </section>
 
-            {/* 3. 底部提交详情区 (平滑高度与抽屉伸缩过渡动效) */}
+            {/* 3. 提交详情区 (支持底部与右侧停靠，Chrome 控制台切换) */}
             <div
-              className={`commit-details-drawer ${detailsCollapsed ? "collapsed" : "expanded"} ${isResizingDetails ? "is-resizing" : ""}`}
-              style={{ height: detailsCollapsed ? "36px" : `${detailsHeight}px` }}
+              className={`commit-details-drawer dock-${dockPosition} ${detailsCollapsed ? "collapsed" : "expanded"} ${isResizingDetails ? "is-resizing" : ""}`}
+              style={
+                dockPosition === "bottom"
+                  ? { height: detailsCollapsed ? "36px" : `${detailsHeight}px` }
+                  : { width: detailsCollapsed ? "36px" : `${detailsWidth}px` }
+              }
             >
               {!detailsCollapsed && (
                 <div
-                  className={`details-resizer ${isResizingDetails ? "resizing" : ""}`}
+                  className={`details-resizer ${dockPosition === "bottom" ? "resizer-top" : "resizer-left"} ${isResizingDetails ? "resizing" : ""}`}
                   onMouseDown={handleDetailsMouseDown}
                 />
               )}
@@ -762,16 +1234,22 @@ export default function App() {
               >
                 <div className="collapsed-bar-left">
                   <span className="collapsed-bar-title">
-                    <ChevronUp size={13} className={`panel-chevron-icon ${!detailsCollapsed ? "rotated" : ""}`} />
+                    <ChevronUp
+                      size={13}
+                      className={`panel-chevron-icon ${
+                        dockPosition === "bottom"
+                          ? !detailsCollapsed ? "rotated" : ""
+                          : !detailsCollapsed ? "rotated-right" : "rotated-left"
+                      }`}
+                    />
                     <span>提交详情</span>
                   </span>
-                  {currentCommit && (
+                  {currentCommit && !detailsCollapsed && (
                     <>
                       <span className="sha-pill-badge" style={{ padding: "1px 6px", fontSize: "11px" }}>
                         {currentCommit.sha}
                       </span>
                       <span className="collapsed-bar-msg">
-                        {currentCommit.prefix ? `${currentCommit.prefix} ` : ""}
                         {currentCommit.msg}
                       </span>
                     </>
@@ -779,7 +1257,7 @@ export default function App() {
                 </div>
 
                 <div className="collapsed-bar-right">
-                  {currentCommit && currentFiles.length > 0 && (
+                  {currentCommit && currentFiles.length > 0 && !detailsCollapsed && (
                     <div className="diff-tags-cluster">
                       {diffStats.adds > 0 && (
                         <span className="diff-watercolor-tag add">+{diffStats.adds}</span>
@@ -789,6 +1267,29 @@ export default function App() {
                       )}
                     </div>
                   )}
+
+                  {/* Chrome DevTools 风格停靠切换按钮 */}
+                  <button
+                    type="button"
+                    className="panel-toggle-btn dock-switch-btn"
+                    onClick={toggleDockPosition}
+                    title={dockPosition === "bottom" ? "停靠到右侧 (Dock to right)" : "停靠到底部 (Dock to bottom)"}
+                  >
+                    {dockPosition === "bottom" ? (
+                      /* Chrome 控制台：停靠到右侧图标 */
+                      <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                        <rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3"/>
+                        <rect x="9.5" y="2.5" width="4" height="11" rx="1" fill="currentColor"/>
+                      </svg>
+                    ) : (
+                      /* Chrome 控制台：停靠到底部图标 */
+                      <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                        <rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3"/>
+                        <rect x="2.5" y="9.5" width="11" height="4" rx="1" fill="currentColor"/>
+                      </svg>
+                    )}
+                  </button>
+
                   <button
                     className="panel-toggle-btn"
                     onClick={(e) => {
@@ -797,7 +1298,14 @@ export default function App() {
                     }}
                     title={detailsCollapsed ? "展开详情面板" : "收起详情面板"}
                   >
-                    <ChevronUp size={13} className={`panel-toggle-icon ${!detailsCollapsed ? "rotated" : ""}`} />
+                    <ChevronUp
+                      size={13}
+                      className={`panel-toggle-icon ${
+                        dockPosition === "bottom"
+                          ? !detailsCollapsed ? "rotated" : ""
+                          : !detailsCollapsed ? "rotated-right" : "rotated-left"
+                      }`}
+                    />
                   </button>
                 </div>
               </div>
@@ -808,7 +1316,6 @@ export default function App() {
                   <div className="commit-details-view-inner">
                     <div className="details-header-row">
                       <div className="commit-heading">
-                        {currentCommit.prefix ? `${currentCommit.prefix} ` : ""}
                         {currentCommit.msg}
                       </div>
                     </div>
@@ -861,6 +1368,171 @@ export default function App() {
               </div>
             </div>
           </main>
+        </div>
+      )}
+
+      {/* 分支右键上下文菜单 */}
+      {contextMenu && (
+        <div
+          className="branch-context-menu"
+          style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="context-menu-header">
+            <GitBranch size={12} />
+            <span>{contextMenu.branchName}</span>
+          </div>
+          <div className="context-menu-divider" />
+          <button
+            type="button"
+            className="context-menu-item"
+            disabled={contextMenu.isHead}
+            onClick={() => {
+              const target = contextMenu.isRemote
+                ? contextMenu.branchName.replace(/^origin\//, "")
+                : contextMenu.branchName;
+              handleCheckoutBranch(target);
+              setContextMenu(null);
+            }}
+          >
+            <GitBranch size={13} />
+            <span>{contextMenu.isRemote ? "检出为本地分支" : "检出并切换至此分支"}</span>
+          </button>
+          <button
+            type="button"
+            className="context-menu-item"
+            disabled={contextMenu.isHead}
+            onClick={() => {
+              const cur = repoDetails?.repo.branch || "HEAD";
+              setMergeModal({
+                visible: true,
+                sourceBranch: contextMenu.branchName,
+                targetBranch: cur,
+                isSquash: false,
+                commitMsg: `Merge branch '${contextMenu.branchName}' into ${cur}`,
+              });
+              setContextMenu(null);
+            }}
+          >
+            <GitMerge size={13} />
+            <span>合并到当前分支 ({repoDetails?.repo.branch})</span>
+          </button>
+          <button
+            type="button"
+            className="context-menu-item"
+            disabled={contextMenu.isHead}
+            onClick={() => {
+              const cur = repoDetails?.repo.branch || "HEAD";
+              setMergeModal({
+                visible: true,
+                sourceBranch: contextMenu.branchName,
+                targetBranch: cur,
+                isSquash: true,
+                commitMsg: `Squash merge branch '${contextMenu.branchName}'`,
+              });
+              setContextMenu(null);
+            }}
+          >
+            <GitCommit size={13} />
+            <span>Squash 合并到当前分支...</span>
+          </button>
+        </div>
+      )}
+
+      {/* 合并分支确认弹窗 */}
+      {mergeModal && (
+        <div className="modal-overlay" onClick={() => setMergeModal(null)}>
+          <div
+            className="modal-dialog merge-modal-dialog"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="modal-title">
+                <GitMerge size={16} />
+                <span>{mergeModal.isSquash ? "Squash 合并分支" : "合并分支"}</span>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setMergeModal(null)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="merge-info-card">
+                <div className="merge-direction">
+                  <span className="merge-branch-tag source">{mergeModal.sourceBranch}</span>
+                  <span className="merge-arrow">➔</span>
+                  <span className="merge-branch-tag target">{mergeModal.targetBranch} (当前分支)</span>
+                </div>
+                <p className="merge-description">
+                  {mergeModal.isSquash
+                    ? "Squash 合并将来源分支的所有提交压缩为当前分支上的单次合并提交，保持主干历史整洁。"
+                    : "普通合并保留完整的来源分支历史记录，并通过单独的 Merge Commit 合并入当前分支。"}
+                </p>
+              </div>
+
+              <div className="form-field-group">
+                <label className="form-label">合并提交说明 (Commit Message)</label>
+                <textarea
+                  className="form-textarea"
+                  rows={3}
+                  value={mergeModal.commitMsg}
+                  onChange={(e) =>
+                    setMergeModal((prev) =>
+                      prev ? { ...prev, commitMsg: e.target.value } : null
+                    )
+                  }
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setMergeModal(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleExecuteMerge}
+                disabled={loading}
+              >
+                {loading ? "正在合并..." : "确认合并"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 工作区文件差异对比大窗口 */}
+      {activeWorkingDiff && (
+        <div
+          className="diff-modal-overlay"
+          onClick={() => {
+            setActiveWorkingDiff(null);
+            setIsWorkingDiffMaximized(false);
+          }}
+        >
+          <div
+            className={`diff-modal-window ${isWorkingDiffMaximized ? "is-maximized" : ""}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <DiffViewer
+              diffText={activeWorkingDiff.diffText}
+              filePath={activeWorkingDiff.path}
+              isExpandedModal={true}
+              isMaximized={isWorkingDiffMaximized}
+              onToggleMaximize={() => setIsWorkingDiffMaximized(!isWorkingDiffMaximized)}
+              onCloseModal={() => {
+                setActiveWorkingDiff(null);
+                setIsWorkingDiffMaximized(false);
+              }}
+            />
+          </div>
         </div>
       )}
     </div>
