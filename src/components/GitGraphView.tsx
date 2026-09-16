@@ -22,87 +22,101 @@ export interface ComputedEdge {
 }
 
 export const BRANCH_COLORS = [
-  "#3b82f6", // 0: 经典蓝 (main / trunk)
-  "#8b5cf6", // 1: 紫色 (dev / feature 1)
-  "#10b981", // 2: 翡翠绿 (feature 2)
-  "#f59e0b", // 3: 琥珀橙 (hotfix)
-  "#ec4899", // 4: 洋红 (payment)
-  "#06b6d4", // 5: 青蓝
+  "#3b82f6", // 0: 蓝 (通常 main / dev)
+  "#8b5cf6", // 1: 紫
+  "#10b981", // 2: 绿
+  "#f59e0b", // 3: 橙
+  "#ec4899", // 4: 粉
+  "#06b6d4", // 5: 青
   "#f97316", // 6: 珊瑚橙
-  "#6366f1", // 7: 靛青
+  "#6366f1", // 7: 靛蓝
 ];
 
-function makePath(fromX: number, fromY: number, toX: number, toY: number, isMerge: boolean): string {
-  if (fromX === toX) {
-    return `M ${fromX} ${fromY} L ${toX} ${toY}`;
+const ROW_H = 36;
+const COL_W = 14;
+const NODE_CY = (i: number) => i * ROW_H + 18;
+const NODE_CX = (col: number) => 14 + col * COL_W;
+
+/**
+ * 绘制从 (x1, y1) 到 (x2, y2) 的连接路径：
+ * isMerge: true 表示合并来源连线（从合并提交向外平滑连接到被合并分支）
+ * isMerge: false 表示分支分叉连线（沿子分支列向下，临近父节点时平滑汇入）
+ */
+function makeEdgePath(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  isMerge: boolean
+): string {
+  if (x1 === x2) {
+    return `M ${x1} ${y1} L ${x2} ${y2}`;
   }
+
+  const dy = y2 - y1;
+
   if (isMerge) {
-    // Merge: 从顶部合并提交平滑弯出到来源分支轨道，再垂直连接到该分支的最新提交
-    const curveEndY = Math.min(toY, fromY + 28);
-    const midY = (fromY + curveEndY) * 0.5;
-    if (toY <= curveEndY) {
-      return `M ${fromX} ${fromY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${toY}`;
-    }
-    return `M ${fromX} ${fromY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${curveEndY} L ${toX} ${toY}`;
+    // 合并线：从子节点 (x1, y1) 先平滑向目标列过渡，再竖直连入目标节点 (x2, y2)
+    const curveH = Math.min(28, Math.max(14, dy * 0.45));
+    const midY = y1 + curveH;
+    return `M ${x1} ${y1} C ${x1} ${y1 + curveH * 0.55}, ${x2} ${y1 + curveH * 0.45}, ${x2} ${midY} L ${x2} ${y2}`;
   } else {
-    // Fork: 沿分支自身的轨道垂直向下，到达基准提交时平滑弯入父节点
-    const curveStartY = Math.max(fromY, toY - 28);
-    const midY = (curveStartY + toY) * 0.5;
-    if (fromY >= curveStartY) {
-      return `M ${fromX} ${fromY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${toY}`;
-    }
-    return `M ${fromX} ${fromY} L ${fromX} ${curveStartY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${toY}`;
+    // 分叉线：沿子分支自身列向下，临近基准父节点时平滑拐入 (x2, y2)
+    const curveH = Math.min(28, Math.max(14, dy * 0.45));
+    const startY = y2 - curveH;
+    return `M ${x1} ${y1} L ${x1} ${startY} C ${x1} ${startY + curveH * 0.55}, ${x2} ${startY + curveH * 0.45}, ${x2} ${y2}`;
   }
 }
 
 export function computeGitGraph(commits: GraphCommit[]) {
+  const n = commits.length;
+  if (n === 0) return { nodes: [], edges: [], graphWidth: 28, graphHeight: 36 };
+
   const shaToIdx = new Map<string, number>();
   commits.forEach((c, idx) => shaToIdx.set(c.sha, idx));
 
+  // ── 1. 泳道分配 (Lane Allocation) ──────────────────────────
   const lanes: (string | null)[] = [];
-  const cols: number[] = [];
+  const laneColors: number[] = [];
+  let colorCounter = 0;
+
+  const cols: number[] = new Array(n);
   let maxCol = 0;
 
-  // 1. 严格按时间线分配每个 Commit 的轨道列 (Lane Allocation)
-  for (let i = 0; i < commits.length; i++) {
-    const c = commits[i];
-    let col = lanes.indexOf(c.sha);
+  const getOrAllocLane = (sha: string): number => {
+    let col = lanes.indexOf(sha);
+    if (col !== -1) return col;
 
+    col = lanes.indexOf(null);
     if (col === -1) {
-      col = lanes.indexOf(null);
-      if (col === -1) {
-        col = lanes.length;
-        lanes.push(c.sha);
-      } else {
-        lanes[col] = c.sha;
+      col = lanes.length;
+      lanes.push(sha);
+      laneColors.push(colorCounter++ % BRANCH_COLORS.length);
+    } else {
+      lanes[col] = sha;
+      if (laneColors[col] === undefined) {
+        laneColors[col] = colorCounter++ % BRANCH_COLORS.length;
       }
     }
+    return col;
+  };
 
+  for (let i = 0; i < n; i++) {
+    const c = commits[i];
+
+    // 当前提交所属的列
+    const col = getOrAllocLane(c.sha);
     cols[i] = col;
     if (col > maxCol) maxCol = col;
 
-    const parents = c.parent_shas;
-    if (parents.length === 0) {
-      lanes[col] = null;
+    // 第一父节点继续沿用本列
+    if (c.parent_shas.length > 0) {
+      lanes[col] = c.parent_shas[0];
     } else {
-      lanes[col] = parents[0];
-      for (let pIdx = 1; pIdx < parents.length; pIdx++) {
-        const p = parents[pIdx];
-        let pCol = lanes.indexOf(p);
-        if (pCol === -1) {
-          pCol = lanes.indexOf(null);
-          if (pCol === -1) {
-            pCol = lanes.length;
-            lanes.push(p);
-          } else {
-            lanes[pCol] = p;
-          }
-        }
-        if (pCol > maxCol) maxCol = pCol;
-      }
+      lanes[col] = null; // 初始提交，该列生命周期结束
     }
 
-    // 释放所有已匹配到达当前 commit 的多余轨道，确保绝对不产生悬空断头线
+    // 清除其他列可能存在的同 SHA 等待项（多分支汇聚）
     for (let l = 0; l < lanes.length; l++) {
       if (l !== col && lanes[l] === c.sha) {
         lanes[l] = null;
@@ -110,63 +124,66 @@ export function computeGitGraph(commits: GraphCommit[]) {
     }
   }
 
-  // 2. 生成节点坐标
+  // ── 2. 生成节点 ───────────────────────────────────────────
   const nodes: ComputedNode[] = commits.map((c, i) => {
     const col = cols[i];
-    const cx = 14 + col * 14;
-    const cy = i * 36 + 18;
-    const color = BRANCH_COLORS[col % BRANCH_COLORS.length];
+    const color = BRANCH_COLORS[laneColors[col] ?? col % BRANCH_COLORS.length];
     return {
       sha: c.sha,
       idx: i,
       col,
-      cx,
-      cy,
+      cx: NODE_CX(col),
+      cy: NODE_CY(i),
       color,
       isHead: i === 0,
     };
   });
 
-  // 3. 严格根据父子依赖生成闭环连线 (每条线都始于子节点，终于父节点，杜绝任何孤悬残线)
+  // ── 3. 生成连线（无虚假旁路列，点到点平滑汇聚）─────────────
   const edges: ComputedEdge[] = [];
-  commits.forEach((c, i) => {
-    const cCol = cols[i];
-    const fromX = 14 + cCol * 14;
-    const fromY = i * 36 + 18;
+
+  for (let i = 0; i < n; i++) {
+    const c = commits[i];
+    const fromX = NODE_CX(cols[i]);
+    const fromY = NODE_CY(i);
+    const nodeColor = BRANCH_COLORS[laneColors[cols[i]] ?? cols[i] % BRANCH_COLORS.length];
 
     c.parent_shas.forEach((pSha, pOrder) => {
       const pIdx = shaToIdx.get(pSha);
+      const isMerge = pOrder > 0; // 第 2 个及之后的父节点是 merge 来源
+
       if (pIdx !== undefined) {
         const pCol = cols[pIdx];
-        const toX = 14 + pCol * 14;
-        const toY = pIdx * 36 + 18;
-        const isMerge = pOrder > 0;
-        const color = isMerge
-          ? BRANCH_COLORS[pCol % BRANCH_COLORS.length]
-          : BRANCH_COLORS[cCol % BRANCH_COLORS.length];
+        const toX = NODE_CX(pCol);
+        const toY = NODE_CY(pIdx);
+        const pColor = BRANCH_COLORS[laneColors[pCol] ?? pCol % BRANCH_COLORS.length];
+
+        // 连线颜色：合并线用被合并方(pColor)的颜色，主干线用本分支颜色
+        const color = isMerge ? pColor : nodeColor;
 
         edges.push({
           id: `${c.sha}->${pSha}`,
-          d: makePath(fromX, fromY, toX, toY, isMerge),
+          d: makeEdgePath(fromX, fromY, toX, toY, isMerge),
           color,
         });
       } else {
-        // 父节点超出当前已加载列表时，平滑向下渐隐延伸一小截
+        // 父节点超出当前已加载提交列表：向下平滑渐隐延伸
         edges.push({
           id: `${c.sha}->trail-${pSha}`,
           d: `M ${fromX} ${fromY} L ${fromX} ${fromY + 36}`,
-          color: BRANCH_COLORS[cCol % BRANCH_COLORS.length],
+          color: nodeColor,
         });
       }
     });
-  });
+  }
 
-  const graphWidth = Math.max(28, (maxCol + 1) * 14 + 16);
-  const graphHeight = Math.max(36, commits.length * 36);
+  const graphWidth = Math.max(28, NODE_CX(maxCol) + COL_W + 12);
+  const graphHeight = Math.max(36, n * ROW_H);
 
   return { nodes, edges, graphWidth, graphHeight };
 }
 
+// ── SVG 渲染组件 ───────────────────────────────────────────
 interface GitGraphOverlayProps {
   commits: GraphCommit[];
   selectedSha?: string;
@@ -193,9 +210,9 @@ export const GitGraphOverlay: React.FC<GitGraphOverlayProps> = ({
         top: 0,
         pointerEvents: "none",
         zIndex: 2,
+        overflow: "visible",
       }}
     >
-      {/* 1. 严格闭环连接的拓扑曲线 */}
       {edges.map((e) => (
         <path
           key={e.id}
@@ -208,7 +225,6 @@ export const GitGraphOverlay: React.FC<GitGraphOverlayProps> = ({
         />
       ))}
 
-      {/* 2. 节点圆点 (精准对齐每行 Commit) */}
       {nodes.map((n) => {
         const isSelected = n.sha === selectedSha;
         return (
@@ -224,7 +240,6 @@ export const GitGraphOverlay: React.FC<GitGraphOverlayProps> = ({
                 opacity={0.65}
               />
             )}
-
             <circle
               cx={n.cx}
               cy={n.cy}
@@ -233,8 +248,9 @@ export const GitGraphOverlay: React.FC<GitGraphOverlayProps> = ({
               stroke="var(--surface)"
               strokeWidth={1.5}
             />
-
-            {n.isHead && <circle cx={n.cx} cy={n.cy} r={1.8} fill="var(--surface)" />}
+            {n.isHead && (
+              <circle cx={n.cx} cy={n.cy} r={1.8} fill="var(--surface)" />
+            )}
           </g>
         );
       })}

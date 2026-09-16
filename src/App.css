@@ -573,7 +573,7 @@ html, body, #root {
 }
 
 .commit-line-row .col-d-date {
-  width: 80px;
+  width: 125px;
   font-size: 11.5px;
   color: var(--ink-tertiary);
   text-align: right;
@@ -2502,4 +2502,246 @@ html, body, #root {
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ── 提交搜索栏 ─────────────────────────────────────────── */
+.commit-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background-color: var(--surface);
+  flex-shrink: 0;
+}
+
+.commit-search-icon {
+  color: var(--ink-tertiary);
+  flex-shrink: 0;
+}
+
+.commit-search-input {
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background-color: var(--canvas);
+  color: var(--ink);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.commit-search-input:focus {
+  border-color: var(--ink-tertiary);
+}
+
+.commit-search-input::placeholder {
+  color: var(--ink-tertiary);
+}
+
+.commit-search-count {
+  font-size: 11px;
+  color: var(--ink-tertiary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── 加载更多 ────────────────────────────────────────────── */
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 14px;
+}
+
+.load-more-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background-color: var(--canvas);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  border-color: var(--ink-tertiary);
+  color: var(--ink);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── 冲突状态徽章 ────────────────────────────────────────── */
+.status-conflict {
+  background-color: rgba(234, 88, 12, 0.12) !important;
+  color: #c2410c !important;
+  border-color: rgba(234, 88, 12, 0.28) !important;
+}
+
+/* ── 右键菜单危险项 ─────────────────────────────────────── */
+.context-menu-item.danger {
+  color: var(--diff-del-text);
+}
+
+.context-menu-item.danger:hover:not(:disabled) {
+  background-color: rgba(235, 87, 87, 0.08);
+}
+
+/* ── git-log-view 支持搜索栏的弹性布局 ─────────────────── */
+.git-log-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.git-log-view .table-scroll-view {
+  flex: 1;
+  overflow: auto;
+}
+
+/* ── Stash 面板 ──────────────────────────────────────────── */
+.stash-save-row {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px 4px;
+}
+
+.stash-message-input {
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background-color: var(--canvas);
+  color: var(--ink);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.stash-message-input:focus {
+  border-color: var(--ink-tertiary);
+}
+
+.stash-message-input::placeholder {
+  color: var(--ink-tertiary);
+}
+
+.stash-save-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background-color: var(--canvas);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s ease;
+  flex-shrink: 0;
+}
+
+.stash-save-btn:hover {
+  background-color: var(--row-hover);
+  color: var(--ink);
+}
+
+.stash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 4px;
+}
+
+.stash-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  border-radius: 4px;
+  transition: background-color 0.1s ease;
+  gap: 6px;
+}
+
+.stash-item-row:hover {
+  background-color: var(--row-hover);
+}
+
+.stash-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
+
+.stash-index-badge {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--ink-tertiary);
+  line-height: 1;
+}
+
+.stash-item-msg {
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stash-item-date {
+  font-size: 10px;
+  color: var(--ink-tertiary);
+  font-family: var(--font-mono);
+}
+
+.stash-item-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.stash-item-row:hover .stash-item-actions {
+  opacity: 1;
+}
+
+.stash-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.stash-action-btn:hover {
+  background-color: var(--chip-bg);
+  color: var(--ink);
+}
+
+.stash-action-btn.danger:hover {
+  background-color: rgba(235, 87, 87, 0.1);
+  color: var(--diff-del-text);
 }
