@@ -1,6 +1,19 @@
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+pub fn create_git_command() -> Command {
+    let mut cmd = Command::new("git");
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 pub fn run_git_in(repo_path: &str, args: &[&str]) -> Result<String, String> {
     let mut full_args = vec![
         "-c",
@@ -12,7 +25,7 @@ pub fn run_git_in(repo_path: &str, args: &[&str]) -> Result<String, String> {
     ];
     full_args.extend_from_slice(args);
 
-    let output = Command::new("git")
+    let output = create_git_command()
         .current_dir(repo_path)
         .args(&full_args)
         .output()

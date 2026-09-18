@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use super::utils::{clean_git_path, determine_file_type, run_git_in};
+use super::utils::{clean_git_path, create_git_command, determine_file_type, run_git_in};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RepoInfo {
@@ -410,8 +410,6 @@ pub async fn open_folder_dialog() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn clone_repository(url: String, target_dir: String) -> Result<String, String> {
-    use std::process::Command;
-
     let url = url.trim();
     let target = target_dir.trim();
 
@@ -433,7 +431,7 @@ pub fn clone_repository(url: String, target_dir: String) -> Result<String, Strin
 
     let dest = std::path::Path::new(target).join(&repo_name);
 
-    let output = Command::new("git")
+    let output = create_git_command()
         .args([
             "-c", "core.quotepath=false",
             "clone", "--progress", url,
